@@ -303,7 +303,7 @@ export class RpcRelay extends EventEmitter {
     let primaryConnected = false
     const pendingToPrimary: Buffer[] = []
 
-    client.on('data', (chunk) => {
+    client.on('data', (chunk: Buffer) => {
       for (const frame of clientReader.push(chunk)) {
         if (frame.op === OP_HANDSHAKE) {
           handshakePayload = frame.payload
@@ -326,7 +326,7 @@ export class RpcRelay extends EventEmitter {
       primaryConnected = true
       for (const encoded of pendingToPrimary.splice(0)) primary.write(encoded)
 
-      primary.on('data', (chunk) => {
+      primary.on('data', (chunk: Buffer) => {
         for (const frame of primaryReader.push(chunk)) {
           if (client.writable) client.write(encodeFrame(frame.op, frame.payload))
         }

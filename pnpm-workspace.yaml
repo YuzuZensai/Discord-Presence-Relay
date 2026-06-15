@@ -1,0 +1,12 @@
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - esbuild
+  - koffi
+
+minimumReleaseAge: 4320
+
+allowBuilds:
+  electron-winstaller: true
+  esbuild: true
+  koffi: true

@@ -21,7 +21,7 @@ export class MirrorConnection {
 
     // Discord sends a READY dispatch after the handshake; only once that
     // arrives will it accept further commands like SET_ACTIVITY.
-    this.sock.on('data', (chunk) => {
+    this.sock.on('data', (chunk: Buffer) => {
       const hadFrames = this.reader.push(chunk).length > 0
       if (hadFrames && !this.ready) {
         this.ready = true

@@ -1,4 +1,4 @@
-const { execSync } = require('child_process')
+import { execSync } from 'child_process'
 
 function getBuildVersion() {
   if (process.env.BUILD_VERSION) return process.env.BUILD_VERSION
@@ -14,16 +14,16 @@ process.env.BUILD_VERSION = getBuildVersion()
 /**
  * @type {import('electron-builder').Configuration}
  */
-module.exports = {
+export default {
   appId: 'cafe.kirameki.discord-rpc-relay',
   productName: 'Discord RPC Relay',
   files: [
     '!**/.vscode/*',
     '!src/*',
     '!electron.vite.config.{js,ts,mjs,cjs}',
-    '!electronBuilder.js',
+    '!electronBuilder.mjs',
     '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}',
-    '!{.env,.env.*,.npmrc,pnpm-lock.yaml}',
+    '!{.env,.env.*,.npmrc,pnpm-lock.yaml,pnpm-workspace.yaml}',
     '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
   ],
   asarUnpack: ['resources/**'],
