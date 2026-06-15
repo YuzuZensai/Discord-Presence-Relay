@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as net from 'net'
 import * as path from 'path'
+import { execFileSync } from 'child_process'
 import type { ClaimedSocket, ProcessInfo, RelayPlatform } from './types'
 
 const REAL_PREFIX = 'discord-ipc-real-'
@@ -21,12 +22,6 @@ function claimedPath(index: number): string {
   return path.join(runtimeDir(), `${REAL_PREFIX}${index}`)
 }
 
-/**
- * Linux + macOS implementation. Discord listens on Unix domain sockets named
- * discord-ipc-0..9 in the runtime directory. We take over index 0 by renaming
- * the real socket out of the way and binding our own server in its place,
- * connecting through to the renamed socket for passthrough.
- */
 export class PosixPlatform implements RelayPlatform {
   readonly isSupported = true
 
@@ -57,9 +52,6 @@ export class PosixPlatform implements RelayPlatform {
         continue
       }
 
-      // The original path may be a dead fake socket left behind by a
-      // relay process that died without cleaning up. If nothing is
-      // listening there, remove it and restore the real socket.
       if (!(await isSocketAlive(original))) {
         fs.unlinkSync(original)
         fs.renameSync(leftover, original)
@@ -93,9 +85,7 @@ export class PosixPlatform implements RelayPlatform {
   }
 
   getInstanceProcess(index: number): ProcessInfo | null {
-    // The kernel reports a Unix socket's *original* bind path in
-    // /proc/net/unix even after the file is renamed on disk, so look up
-    // owners by the pre-rename discord-ipc-N path rather than the claimed one.
+    // /proc/net/unix reports the original bind path even after the file is renamed on disk
     return findSocketOwner(ipcPath(index))
   }
 
@@ -118,28 +108,46 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
 const SOCKET_OWNER_CACHE_MS = 2000
 const socketOwnerCache = new Map<string, { value: ProcessInfo | null; at: number }>()
 
-/**
- * Identifies the process listening on a Unix socket file by cross-referencing
- * /proc/net/unix (path -> inode) with /proc/*\/fd (inode -> pid). Linux only;
- * results are cached briefly since this scans every process's open fds.
- */
 function findSocketOwner(socketPath: string): ProcessInfo | null {
-  if (process.platform !== 'linux') return null
+  if (process.platform !== 'linux' && process.platform !== 'darwin') return null
 
   const cached = socketOwnerCache.get(socketPath)
   if (cached && Date.now() - cached.at < SOCKET_OWNER_CACHE_MS) {
     return cached.value
   }
 
-  const result = locateSocketOwner(socketPath)
+  const result =
+    process.platform === 'darwin'
+      ? locateSocketOwnerMacOS(socketPath)
+      : locateSocketOwner(socketPath)
   socketOwnerCache.set(socketPath, { value: result, at: Date.now() })
   return result
 }
 
+function locateSocketOwnerMacOS(socketPath: string): ProcessInfo | null {
+  try {
+    const output = execFileSync('lsof', ['-U', '-F', 'pcn'], { encoding: 'utf8', timeout: 3000 })
+    let currentPid = 0
+    let currentName = ''
+    for (const line of output.split('\n')) {
+      if (line.startsWith('p')) {
+        currentPid = parseInt(line.slice(1), 10)
+        currentName = ''
+      } else if (line.startsWith('c')) {
+        currentName = line.slice(1)
+      } else if (line.startsWith('n') && line.slice(1) === socketPath) {
+        if (currentPid > 0 && currentPid !== process.pid) {
+          return { pid: currentPid, name: currentName }
+        }
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 function locateSocketOwner(socketPath: string): ProcessInfo | null {
-  // Multiple sockets can be bound to the same path (our own fake server
-  // shares discord-ipc-0's path with the real Discord socket after rename),
-  // so check every matching inode and skip the one owned by this process.
   for (const inode of findInodesForPath(socketPath)) {
     const owner = findProcessForInode(inode)
     if (owner && owner.pid !== process.pid) return owner
@@ -216,7 +224,7 @@ let getsockopt: GetSockOpt | null | undefined
 function loadGetSockOpt(): GetSockOpt | null {
   if (getsockopt !== undefined) return getsockopt
 
-  if (process.platform !== 'linux') {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') {
     getsockopt = null
     return getsockopt
   }
@@ -224,7 +232,8 @@ function loadGetSockOpt(): GetSockOpt | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const koffi = require('koffi')
-    const libc = koffi.load('libc.so.6')
+    const libName = process.platform === 'darwin' ? 'libSystem.B.dylib' : 'libc.so.6'
+    const libc = koffi.load(libName)
     getsockopt = libc.func(
       'int getsockopt(int sockfd, int level, int optname, void *optval, int *optlen)'
     ) as GetSockOpt
@@ -236,11 +245,23 @@ function loadGetSockOpt(): GetSockOpt | null {
 
 const SOL_SOCKET = 1
 const SO_PEERCRED = 17
-const UCRED_SIZE = 12 // struct ucred { pid_t pid; uid_t uid; gid_t gid; }
+const UCRED_SIZE = 12
+const SOL_LOCAL = 0
+const LOCAL_PEERPID = 2
 
 function findPeerProcess(localFd: number): ProcessInfo | null {
   const fn = loadGetSockOpt()
   if (!fn) return null
+
+  if (process.platform === 'darwin') {
+    const optval = Buffer.alloc(4)
+    const optlen = Buffer.alloc(4)
+    optlen.writeInt32LE(4, 0)
+    if (fn(localFd, SOL_LOCAL, LOCAL_PEERPID, optval, optlen) !== 0) return null
+    const pid = optval.readInt32LE(0)
+    if (pid <= 0) return null
+    return { pid, name: macProcessName(pid) }
+  }
 
   const optval = Buffer.alloc(UCRED_SIZE)
   const optlen = Buffer.alloc(4)
@@ -252,4 +273,15 @@ function findPeerProcess(localFd: number): ProcessInfo | null {
   if (pid <= 0) return null
 
   return { pid, name: processName(String(pid)) }
+}
+
+function macProcessName(pid: number): string {
+  try {
+    return execFileSync('ps', ['-p', String(pid), '-o', 'comm='], {
+      encoding: 'utf8',
+      timeout: 1000
+    }).trim()
+  } catch {
+    return String(pid)
+  }
 }

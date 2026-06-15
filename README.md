@@ -10,7 +10,7 @@ It works by taking over `discord-ipc-0`, passing all traffic through to the
 real primary instance unchanged, and forwarding the handshake and
 `SET_ACTIVITY` frames to the other detected instances.
 
-Linux and macOS (untested) only.
+Linux and macOS only.
 
 ## Development
 
