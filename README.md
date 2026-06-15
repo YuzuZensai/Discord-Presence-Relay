@@ -1,5 +1,7 @@
 # Discord RPC Relay
 
+![Screenshot](assets/screenshot.png)
+
 Mirrors Discord Rich Presence (RPC) activity to every running Discord
 instance (stable, PTB, Canary, ...), so apps that only connect to the
 primary `discord-ipc-0` socket show their presence everywhere.
