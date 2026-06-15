@@ -388,9 +388,14 @@ export class RpcRelay extends EventEmitter {
 
       let mirror = this.mirrors.get(index)
       if (!mirror) {
-        mirror = new MirrorConnection(mirrorPath, handshakePayload, () =>
-          this.mirrors.delete(index)
+        const newMirror: MirrorConnection = new MirrorConnection(
+          mirrorPath,
+          handshakePayload,
+          () => {
+            if (this.mirrors.get(index) === newMirror) this.mirrors.delete(index)
+          }
         )
+        mirror = newMirror
         this.mirrors.set(index, mirror)
         if (frame.op === OP_HANDSHAKE) continue // handshake already sent on connect
       }
