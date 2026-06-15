@@ -70,6 +70,12 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+
 function shouldStartHidden(): boolean {
   if (process.argv.includes('--hidden')) return true
   if (process.platform === 'darwin') {
@@ -178,6 +184,10 @@ function updateTrayMenu(status: RelayStatus): void {
 
   tray.setContextMenu(menu)
 }
+
+app.on('second-instance', () => {
+  createWindow()
+})
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('cafe.kirameki.discord-rpc-relay')
