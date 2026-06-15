@@ -5,6 +5,7 @@ import { encodeFrame, FrameReader, OP_FRAME, OP_HANDSHAKE } from './ipc-protocol
  * A lazily-established connection to a secondary Discord instance that
  * mirrors the primary connection's handshake and SET_ACTIVITY frames.
  */
+
 export class MirrorConnection {
   private readonly sock: net.Socket
   private readonly reader = new FrameReader()
