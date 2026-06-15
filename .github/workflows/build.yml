@@ -7,7 +7,6 @@ on:
     tags:
       - 'v*'
   pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
@@ -41,9 +40,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm ${{ matrix.build-script }}
-
       - name: Set artifact version
         id: version
         shell: bash
@@ -54,8 +50,13 @@ jobs:
             echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        run: pnpm ${{ matrix.build-script }}
+
       - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.os }}-${{ steps.version.outputs.value }}
           path: |
