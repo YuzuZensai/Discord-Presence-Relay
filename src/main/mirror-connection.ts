@@ -29,6 +29,15 @@ export class MirrorConnection {
     }
   }
 
+  /** Sends a final frame and closes the connection once it has been flushed. */
+  sendActivityAndClose(payload: Buffer): void {
+    if (this.sock.writable) {
+      this.sock.end(encodeFrame(OP_FRAME, payload))
+    } else {
+      this.sock.destroy()
+    }
+  }
+
   destroy(): void {
     this.sock.destroy()
   }

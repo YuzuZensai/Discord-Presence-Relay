@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { EventEmitter } from 'events'
 import * as net from 'net'
 import { encodeFrame, Frame, FrameReader, OP_HANDSHAKE, parseFramePayload } from './ipc-protocol'
@@ -123,6 +124,8 @@ export class RpcRelay extends EventEmitter {
   private running = false
   private lastError: string | null = null
   private restarting = false
+  private mirrors = new Map<number, MirrorConnection>()
+  private lastActivityPid = new Map<number, number>()
 
   getStatus(): RelayStatus {
     const instances: RelayInstance[] = this.claimed.map(({ index, path: socketPath }, i) => ({
@@ -150,6 +153,7 @@ export class RpcRelay extends EventEmitter {
       this.disabledMirrors.delete(index)
     } else {
       this.disabledMirrors.add(index)
+      this.clearMirrorActivity(index)
     }
     this.emitStatus()
     return this.getStatus()
@@ -219,6 +223,10 @@ export class RpcRelay extends EventEmitter {
     platform.removeFakeSocket(platform.fakeSocketPath())
     for (const claimed of this.claimed) platform.restoreSocket(claimed)
 
+    for (const mirror of this.mirrors.values()) mirror.destroy()
+    this.mirrors.clear()
+    this.lastActivityPid.clear()
+
     this.claimed = []
     this.connectedClients.clear()
     this.emitStatus()
@@ -280,13 +288,13 @@ export class RpcRelay extends EventEmitter {
     const primaryReader = new FrameReader()
 
     let handshakePayload: Buffer | null = null
-    const mirrors = new Map<number, MirrorConnection>()
 
     const cleanup = (): void => {
       client.destroy()
       primary.destroy()
-      for (const mirror of mirrors.values()) mirror.destroy()
-      mirrors.clear()
+      for (const mirror of this.mirrors.values()) mirror.destroy()
+      this.mirrors.clear()
+      this.lastActivityPid.clear()
       this.connectedClients.delete(clientId)
       this.emitStatus()
     }
@@ -309,7 +317,7 @@ export class RpcRelay extends EventEmitter {
           pendingToPrimary.push(encoded)
         }
 
-        if (handshakePayload) this.mirrorFrame(frame, handshakePayload, mirrors)
+        if (handshakePayload) this.mirrorFrame(frame, handshakePayload)
         void this.recordActivity(frame, clientAppId)
       }
     })
@@ -355,33 +363,64 @@ export class RpcRelay extends EventEmitter {
   }
 
   /** Forwards the handshake and SET_ACTIVITY frames to every enabled mirror instance. */
-  private mirrorFrame(
-    frame: Frame,
-    handshakePayload: Buffer,
-    mirrors: Map<number, MirrorConnection>
-  ): void {
-    const isSetActivity =
-      frame.op !== OP_HANDSHAKE && parseFramePayload(frame)?.cmd === 'SET_ACTIVITY'
+  private mirrorFrame(frame: Frame, handshakePayload: Buffer): void {
+    const payload = frame.op !== OP_HANDSHAKE ? parseFramePayload(frame) : null
+    const isSetActivity = payload?.cmd === 'SET_ACTIVITY'
     if (frame.op !== OP_HANDSHAKE && !isSetActivity) return
+
+    if (isSetActivity) {
+      const pid = (payload!.args as { pid?: number } | undefined)?.pid
+      if (typeof pid === 'number') {
+        for (let i = 1; i < this.claimed.length; i++) {
+          this.lastActivityPid.set(this.claimed[i].index, pid)
+        }
+      }
+    }
 
     for (let i = 1; i < this.claimed.length; i++) {
       const { index, path: mirrorPath } = this.claimed[i]
 
       if (this.disabledMirrors.has(index)) {
-        mirrors.get(i)?.destroy()
-        mirrors.delete(i)
+        this.mirrors.get(index)?.destroy()
+        this.mirrors.delete(index)
         continue
       }
 
-      let mirror = mirrors.get(i)
+      let mirror = this.mirrors.get(index)
       if (!mirror) {
-        mirror = new MirrorConnection(mirrorPath, handshakePayload, () => mirrors.delete(i))
-        mirrors.set(i, mirror)
+        mirror = new MirrorConnection(mirrorPath, handshakePayload, () =>
+          this.mirrors.delete(index)
+        )
+        this.mirrors.set(index, mirror)
         if (frame.op === OP_HANDSHAKE) continue // handshake already sent on connect
       }
 
       if (frame.op !== OP_HANDSHAKE) mirror.sendActivity(frame.payload)
     }
+  }
+
+  /** Sends a SET_ACTIVITY frame clearing the presence on a mirror, then disconnects it. */
+  private clearMirrorActivity(index: number): void {
+    const mirror = this.mirrors.get(index)
+    if (!mirror) return
+
+    const pid = this.lastActivityPid.get(index)
+    if (pid !== undefined) {
+      const clearPayload = Buffer.from(
+        JSON.stringify({
+          cmd: 'SET_ACTIVITY',
+          args: { pid, activity: null },
+          nonce: randomUUID()
+        }),
+        'utf8'
+      )
+      mirror.sendActivityAndClose(clearPayload)
+    } else {
+      mirror.destroy()
+    }
+
+    this.mirrors.delete(index)
+    this.lastActivityPid.delete(index)
   }
 
   private async recordActivity(frame: Frame, appId: string | null): Promise<void> {
