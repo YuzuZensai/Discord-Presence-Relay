@@ -11,23 +11,72 @@ function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
-function loadDisabledMirrors(): number[] {
+interface Settings {
+  disabledMirrors: number[]
+  startMinimized: boolean
+}
+
+function loadSettings(): Settings {
   try {
     const raw = fs.readFileSync(settingsPath(), 'utf8')
     const data = JSON.parse(raw)
-    return Array.isArray(data?.disabledMirrors) ? data.disabledMirrors : []
+    return {
+      disabledMirrors: Array.isArray(data?.disabledMirrors) ? data.disabledMirrors : [],
+      startMinimized: data?.startMinimized === true
+    }
   } catch {
-    return []
+    return { disabledMirrors: [], startMinimized: false }
   }
 }
 
-function saveDisabledMirrors(indices: number[]): void {
-  fs.writeFileSync(settingsPath(), JSON.stringify({ disabledMirrors: indices }), 'utf8')
+function saveSettings(settings: Settings): void {
+  fs.writeFileSync(settingsPath(), JSON.stringify(settings), 'utf8')
+}
+
+const LINUX_AUTOSTART_DESKTOP_FILE = join(
+  app.getPath('home'),
+  '.config',
+  'autostart',
+  'cafe.kirameki.discord-rpc-relay.desktop'
+)
+
+function getLinuxAutostart(): boolean {
+  return fs.existsSync(LINUX_AUTOSTART_DESKTOP_FILE)
+}
+
+function setLinuxAutostart(enabled: boolean, startMinimized: boolean): boolean {
+  if (!enabled) {
+    fs.rmSync(LINUX_AUTOSTART_DESKTOP_FILE, { force: true })
+    return false
+  }
+
+  const exe = process.env.APPIMAGE ?? app.getPath('exe')
+  const exec = startMinimized ? `"${exe}" --hidden` : `"${exe}"`
+  const desktopEntry = [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=Discord RPC Relay',
+    `Exec=${exec}`,
+    'Terminal=false',
+    'X-GNOME-Autostart-enabled=true'
+  ].join('\n')
+
+  fs.mkdirSync(join(app.getPath('home'), '.config', 'autostart'), { recursive: true })
+  fs.writeFileSync(LINUX_AUTOSTART_DESKTOP_FILE, desktopEntry + '\n', 'utf8')
+  return true
 }
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
+
+function shouldStartHidden(): boolean {
+  if (process.argv.includes('--hidden')) return true
+  if (process.platform === 'darwin') {
+    return app.getLoginItemSettings().wasOpenedAtLogin && loadSettings().startMinimized
+  }
+  return false
+}
 
 function createWindow(): void {
   if (mainWindow) {
@@ -50,7 +99,9 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+    if (!shouldStartHidden()) {
+      mainWindow?.show()
+    }
   })
 
   mainWindow.on('close', (e) => {
@@ -135,7 +186,8 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  relay.setDisabledMirrors(loadDisabledMirrors())
+  const settings = loadSettings()
+  relay.setDisabledMirrors(settings.disabledMirrors)
 
   ipcMain.handle('relay:get-version', () => ({
     version: app.getVersion(),
@@ -144,14 +196,38 @@ app.whenReady().then(() => {
   ipcMain.handle('relay:get-status', () => relay.getStatus())
   ipcMain.handle('relay:start', () => relay.start())
   ipcMain.handle('relay:stop', () => relay.stop())
-  ipcMain.handle('relay:get-autostart', () => app.getLoginItemSettings().openAtLogin)
-  ipcMain.handle('relay:set-autostart', (_e, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled })
+  ipcMain.handle('relay:get-autostart', () => {
+    if (process.platform === 'linux') return getLinuxAutostart()
     return app.getLoginItemSettings().openAtLogin
+  })
+  ipcMain.handle('relay:set-autostart', (_e, enabled: boolean) => {
+    const current = loadSettings()
+    if (process.platform === 'linux') {
+      return setLinuxAutostart(enabled, current.startMinimized)
+    }
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      args: current.startMinimized ? ['--hidden'] : []
+    })
+    return app.getLoginItemSettings().openAtLogin
+  })
+  ipcMain.handle('relay:get-start-minimized', () => loadSettings().startMinimized)
+  ipcMain.handle('relay:set-start-minimized', (_e, enabled: boolean) => {
+    const current = loadSettings()
+    saveSettings({ ...current, startMinimized: enabled })
+
+    if (process.platform === 'linux') {
+      if (getLinuxAutostart()) setLinuxAutostart(true, enabled)
+    } else if (app.getLoginItemSettings().openAtLogin) {
+      app.setLoginItemSettings({ openAtLogin: true, args: enabled ? ['--hidden'] : [] })
+    }
+
+    return enabled
   })
   ipcMain.handle('relay:set-mirror-enabled', (_e, index: number, enabled: boolean) => {
     const status = relay.setMirrorEnabled(index, enabled)
-    saveDisabledMirrors(relay.getDisabledMirrors())
+    const current = loadSettings()
+    saveSettings({ ...current, disabledMirrors: relay.getDisabledMirrors() })
     return status
   })
 

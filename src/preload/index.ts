@@ -11,6 +11,9 @@ const api = {
   getAutostart: (): Promise<boolean> => ipcRenderer.invoke('relay:get-autostart'),
   setAutostart: (enabled: boolean): Promise<boolean> =>
     ipcRenderer.invoke('relay:set-autostart', enabled),
+  getStartMinimized: (): Promise<boolean> => ipcRenderer.invoke('relay:get-start-minimized'),
+  setStartMinimized: (enabled: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('relay:set-start-minimized', enabled),
   setMirrorEnabled: (index: number, enabled: boolean): Promise<RelayStatus> =>
     ipcRenderer.invoke('relay:set-mirror-enabled', index, enabled),
   onStatus: (callback: (status: RelayStatus) => void): (() => void) => {

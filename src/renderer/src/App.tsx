@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, Settings } from 'lucide-react'
+import { ChevronLeft, Info, Settings } from 'lucide-react'
 import type { RelayStatus } from '../../main/relay'
 import { InstanceRow } from './components/InstanceRow'
 import { Toggle } from './components/Toggle'
@@ -102,6 +102,7 @@ export function App(): React.JSX.Element {
   const [status, setStatus] = useState<RelayStatus>(EMPTY_STATUS)
   const [loading, setLoading] = useState(false)
   const [autostart, setAutostart] = useState(false)
+  const [startMinimized, setStartMinimized] = useState(false)
   const [view, setView] = useState<'main' | 'settings'>('main')
   const [appVersion, setAppVersion] = useState<{ version: string; commit: string } | null>(null)
 
@@ -109,6 +110,7 @@ export function App(): React.JSX.Element {
     void (async () => {
       setStatus(await window.api.getStatus())
       setAutostart(await window.api.getAutostart())
+      setStartMinimized(await window.api.getStartMinimized())
       setAppVersion(await window.api.getVersion())
     })()
 
@@ -136,6 +138,10 @@ export function App(): React.JSX.Element {
 
   const onToggleAutostart = async (enabled: boolean): Promise<void> => {
     setAutostart(await window.api.setAutostart(enabled))
+  }
+
+  const onToggleStartMinimized = async (enabled: boolean): Promise<void> => {
+    setStartMinimized(await window.api.setStartMinimized(enabled))
   }
 
   if (status.unsupported) {
@@ -168,6 +174,25 @@ export function App(): React.JSX.Element {
             <span className="text-xs text-zinc-500">Launch automatically when you sign in</span>
           </div>
           <Toggle checked={autostart} onChange={onToggleAutostart} />
+        </section>
+
+        <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex items-center justify-between">
+          <div className="flex flex-col">
+            <span className="text-sm">Start minimized</span>
+            <span className="text-xs text-zinc-500">Open to the tray instead of a window</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {!autostart && (
+              <Info className="w-4 h-4 text-zinc-400 hover:text-zinc-100 cursor-help transition-colors shrink-0">
+                <title>Only applies when &quot;Start on login&quot; is enabled.</title>
+              </Info>
+            )}
+            <Toggle
+              checked={startMinimized}
+              onChange={onToggleStartMinimized}
+              disabled={!autostart}
+            />
+          </div>
         </section>
 
         {appVersion && (
