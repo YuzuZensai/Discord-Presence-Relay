@@ -17,9 +17,6 @@ process.env.BUILD_VERSION = getBuildVersion()
 module.exports = {
   appId: 'cafe.kirameki.discord-rpc-relay',
   productName: 'Discord RPC Relay',
-  directories: {
-    buildResources: 'build'
-  },
   files: [
     '!**/.vscode/*',
     '!src/*',
@@ -40,19 +37,6 @@ module.exports = {
     createDesktopShortcut: 'always'
   },
   mac: {
-    entitlementsInherit: 'build/entitlements.mac.plist',
-    extendInfo: [
-      { NSCameraUsageDescription: "Application requests access to the device's camera." },
-      { NSMicrophoneUsageDescription: "Application requests access to the device's microphone." },
-      {
-        NSDocumentsFolderUsageDescription:
-          "Application requests access to the user's Documents folder."
-      },
-      {
-        NSDownloadsFolderUsageDescription:
-          "Application requests access to the user's Downloads folder."
-      }
-    ],
     notarize: false
   },
   dmg: {
