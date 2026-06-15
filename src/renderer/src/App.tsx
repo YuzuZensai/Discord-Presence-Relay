@@ -7,6 +7,7 @@ import { Button, LinkButton } from './components/Button'
 
 const EMPTY_STATUS: RelayStatus = {
   running: false,
+  waiting: false,
   unsupported: false,
   instances: [],
   connectedClients: [],
@@ -120,7 +121,7 @@ export function App(): React.JSX.Element {
   const toggleRelay = async (): Promise<void> => {
     setLoading(true)
     try {
-      if (status.running) {
+      if (status.running || status.waiting) {
         await window.api.stop()
       } else {
         await window.api.start()
@@ -227,11 +228,23 @@ export function App(): React.JSX.Element {
       <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex items-center justify-between">
         <div className="flex flex-col">
           <span className="text-sm">Relay</span>
-          <span className={`text-xs ${status.running ? 'text-emerald-400' : 'text-zinc-500'}`}>
-            {status.running ? 'Running' : 'Stopped'}
+          <span
+            className={`text-xs ${
+              status.running
+                ? 'text-emerald-400'
+                : status.waiting
+                  ? 'text-amber-400'
+                  : 'text-zinc-500'
+            }`}
+          >
+            {status.running ? 'Running' : status.waiting ? 'Waiting for Discord…' : 'Stopped'}
           </span>
         </div>
-        <Toggle checked={status.running} onChange={() => toggleRelay()} disabled={loading} />
+        <Toggle
+          checked={status.running || status.waiting}
+          onChange={() => toggleRelay()}
+          disabled={loading}
+        />
       </section>
 
       <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex flex-col gap-2">

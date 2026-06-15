@@ -7,6 +7,7 @@ import { platform, type ClaimedSocket, type ProcessInfo } from './platform'
 
 const MAX_SOCKETS = 10
 const DISCOVERY_INTERVAL_MS = 3000
+const WAITING_RETRY_INTERVAL_MS = 3000
 
 interface AppAsset {
   id: string
@@ -101,6 +102,7 @@ export interface LastActivity {
 
 export interface RelayStatus {
   running: boolean
+  waiting: boolean
   unsupported: boolean
   instances: RelayInstance[]
   connectedClients: ConnectedClient[]
@@ -120,8 +122,10 @@ export class RpcRelay extends EventEmitter {
   private connectedClients = new Map<number, ConnectedClient>()
   private nextClientId = 1
   private discoveryTimer: NodeJS.Timeout | null = null
+  private waitingTimer: NodeJS.Timeout | null = null
   private lastActivity: LastActivity | null = null
   private running = false
+  private waiting = false
   private lastError: string | null = null
   private restarting = false
   private mirrors = new Map<number, MirrorConnection>()
@@ -138,6 +142,7 @@ export class RpcRelay extends EventEmitter {
 
     return {
       running: this.running,
+      waiting: this.waiting,
       unsupported: !platform.isSupported,
       instances,
       connectedClients: [...this.connectedClients.values()],
@@ -181,10 +186,12 @@ export class RpcRelay extends EventEmitter {
     this.claimed = platform.discoverAndClaim()
 
     if (this.claimed.length === 0) {
-      this.lastError = 'No running Discord clients found (no discord-ipc-N sockets)'
-      this.emitStatus()
-      throw new Error(this.lastError)
+      this.waitForDiscord()
+      return
     }
+
+    this.waiting = false
+    this.stopWaitingTimer()
 
     const fake = platform.fakeSocketPath()
     platform.removeFakeSocket(fake)
@@ -211,7 +218,13 @@ export class RpcRelay extends EventEmitter {
   }
 
   async stop(): Promise<void> {
-    if (!this.running) return
+    this.stopWaitingTimer()
+    this.waiting = false
+
+    if (!this.running) {
+      this.emitStatus()
+      return
+    }
     this.running = false
     this.stopDiscoveryTimer()
 
@@ -234,6 +247,28 @@ export class RpcRelay extends EventEmitter {
 
   private primaryIndex(): number | undefined {
     return this.claimed[0]?.index
+  }
+
+  private waitForDiscord(): void {
+    this.waiting = true
+    this.lastError = null
+    this.emitStatus()
+
+    if (this.waitingTimer) return
+    this.waitingTimer = setInterval(() => {
+      if (!this.waiting) return
+      void this.start().catch((err) => {
+        this.lastError = err instanceof Error ? err.message : String(err)
+        this.emitStatus()
+      })
+    }, WAITING_RETRY_INTERVAL_MS)
+  }
+
+  private stopWaitingTimer(): void {
+    if (this.waitingTimer) {
+      clearInterval(this.waitingTimer)
+      this.waitingTimer = null
+    }
   }
 
   private startDiscoveryTimer(): void {

@@ -150,15 +150,19 @@ function updateTrayMenu(status: RelayStatus): void {
 
   const menu = Menu.buildFromTemplate([
     {
-      label: status.running ? 'Relay: Running' : 'Relay: Stopped',
+      label: status.running
+        ? 'Relay: Running'
+        : status.waiting
+          ? 'Relay: Waiting for Discord…'
+          : 'Relay: Stopped',
       enabled: false
     },
     { type: 'separator' },
     {
-      label: status.running ? 'Stop Relay' : 'Start Relay',
+      label: status.running || status.waiting ? 'Stop Relay' : 'Start Relay',
       click: async () => {
         try {
-          if (status.running) {
+          if (status.running || status.waiting) {
             await relay.stop()
           } else {
             await relay.start()
