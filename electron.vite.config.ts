@@ -7,7 +7,8 @@ function getCommitHash(): string {
   if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 7)
   try {
     const hash = execSync('git rev-parse --short HEAD').toString().trim()
-    const dirty = execSync('git status --porcelain').toString().trim().length > 0
+    const statusOut = execSync('git status --porcelain --untracked-files=no').toString()
+    const dirty = statusOut.trim().length > 0
     return dirty ? `${hash}-dirty` : hash
   } catch {
     return 'unknown'
