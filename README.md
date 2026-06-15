@@ -1,34 +1,26 @@
-# discord-rpc-relay
+# Discord RPC Relay
 
-A minimal Electron application with TypeScript
+Mirrors Discord Rich Presence (RPC) activity to every running Discord
+instance (stable, PTB, Canary, ...), so apps that only connect to the
+primary `discord-ipc-0` socket show their presence everywhere.
 
-## Recommended IDE Setup
+It works by taking over `discord-ipc-0`, passing all traffic through to the
+real primary instance unchanged, and forwarding the handshake and
+`SET_ACTIVITY` frames to the other detected instances.
 
-- [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)
+Linux and macOS (untested) only.
 
-## Project Setup
-
-### Install
+## Development
 
 ```bash
-$ pnpm install
+pnpm install
+pnpm dev
 ```
 
-### Development
+## Build
 
 ```bash
-$ pnpm dev
-```
-
-### Build
-
-```bash
-# For windows
-$ pnpm build:win
-
-# For macOS
-$ pnpm build:mac
-
-# For Linux
-$ pnpm build:linux
+pnpm build:linux
+pnpm build:mac
+pnpm build:win
 ```
