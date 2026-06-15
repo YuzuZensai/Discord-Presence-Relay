@@ -3,6 +3,8 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type { RelayStatus } from '../main/relay'
 
 const api = {
+  getVersion: (): Promise<{ version: string; commit: string }> =>
+    ipcRenderer.invoke('relay:get-version'),
   getStatus: (): Promise<RelayStatus> => ipcRenderer.invoke('relay:get-status'),
   start: (): Promise<void> => ipcRenderer.invoke('relay:start'),
   stop: (): Promise<void> => ipcRenderer.invoke('relay:stop'),

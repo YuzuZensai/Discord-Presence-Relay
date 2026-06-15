@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Mirrors Discord Rich Presence (RPC) to multiple running Discord instances",
   "main": "./out/main/index.js",
+  "packageManager": "pnpm@10.33.0",
   "author": "",
   "private": true,
   "scripts": {

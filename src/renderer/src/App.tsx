@@ -103,11 +103,13 @@ export function App(): React.JSX.Element {
   const [loading, setLoading] = useState(false)
   const [autostart, setAutostart] = useState(false)
   const [view, setView] = useState<'main' | 'settings'>('main')
+  const [appVersion, setAppVersion] = useState<{ version: string; commit: string } | null>(null)
 
   useEffect(() => {
     void (async () => {
       setStatus(await window.api.getStatus())
       setAutostart(await window.api.getAutostart())
+      setAppVersion(await window.api.getVersion())
     })()
 
     return window.api.onStatus(setStatus)
@@ -167,6 +169,12 @@ export function App(): React.JSX.Element {
           </div>
           <Toggle checked={autostart} onChange={onToggleAutostart} />
         </section>
+
+        {appVersion && (
+          <p className="text-xs text-zinc-500 mt-auto">
+            Version {appVersion.version} ({appVersion.commit})
+          </p>
+        )}
       </div>
     )
   }

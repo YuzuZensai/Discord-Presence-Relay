@@ -5,6 +5,8 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { relay, RelayStatus } from './relay'
 
+declare const __COMMIT_HASH__: string
+
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
@@ -135,6 +137,10 @@ app.whenReady().then(() => {
 
   relay.setDisabledMirrors(loadDisabledMirrors())
 
+  ipcMain.handle('relay:get-version', () => ({
+    version: app.getVersion(),
+    commit: __COMMIT_HASH__
+  }))
   ipcMain.handle('relay:get-status', () => relay.getStatus())
   ipcMain.handle('relay:start', () => relay.start())
   ipcMain.handle('relay:stop', () => relay.stop())
