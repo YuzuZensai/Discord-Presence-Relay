@@ -10,7 +10,6 @@ export interface Frame {
   payload: Buffer
 }
 
-/** Buffers stream chunks and yields complete IPC frames as they arrive. */
 export class FrameReader {
   private buf = Buffer.alloc(0)
 
@@ -39,7 +38,6 @@ export function encodeFrame(op: number, payload: Buffer): Buffer {
   return Buffer.concat([header, payload])
 }
 
-/** Parses a non-handshake frame's JSON payload, returning null if it isn't JSON. */
 export function parseFramePayload(frame: Frame): Record<string, unknown> | null {
   try {
     return JSON.parse(frame.payload.toString('utf8'))

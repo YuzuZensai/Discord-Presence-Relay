@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { ChevronLeft, Info, Settings } from 'lucide-react'
-import type { RelayStatus } from '../../main/relay'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, Eye, EyeOff, Info, Settings } from 'lucide-react'
+import type { ConnectedClient, LastActivity, RelayStatus } from '../../main/relay'
 import { InstanceRow } from './components/InstanceRow'
 import { Toggle } from './components/Toggle'
 import { Button, LinkButton } from './components/Button'
@@ -11,7 +11,7 @@ const EMPTY_STATUS: RelayStatus = {
   unsupported: false,
   instances: [],
   connectedClients: [],
-  lastActivity: null,
+  blacklistedApps: [],
   error: null
 }
 
@@ -38,13 +38,7 @@ function formatDuration(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
-function ActivityPreview({
-  activity
-}: {
-  activity: RelayStatus['lastActivity']
-}): React.JSX.Element | null {
-  if (!activity) return null
-
+function ActivityPreview({ activity }: { activity: LastActivity }): React.JSX.Element | null {
   const { app, details, state, assets, timestamps, buttons, at } = activity
   const elapsed = timestamps ? formatElapsed(timestamps.start, timestamps.end) : null
 
@@ -61,7 +55,7 @@ function ActivityPreview({
             />
           ) : (
             <div className="w-16 h-16 rounded-lg bg-zinc-700 flex items-center justify-center text-zinc-500 text-xs">
-              {app ? app.slice(0, 2).toUpperCase() : '—'}
+              {app ? app.slice(0, 2).toUpperCase() : '-'}
             </div>
           )}
           {assets?.smallImage && (
@@ -95,6 +89,137 @@ function ActivityPreview({
       <div className="text-xs text-zinc-500">
         Last mirrored at {new Date(at).toLocaleTimeString()}
       </div>
+    </div>
+  )
+}
+
+type ToggleBlacklist = (appId: string, blacklisted: boolean) => void
+
+function ClientRow({
+  client,
+  onToggleBlacklist
+}: {
+  client: ConnectedClient
+  onToggleBlacklist: ToggleBlacklist
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-zinc-300 truncate">
+          {client.process
+            ? `${client.process.name} (pid ${client.process.pid})`
+            : 'unknown process'}
+        </span>
+        <Button
+          variant="ghost"
+          className="p-1 shrink-0"
+          disabled={!client.appId}
+          onClick={() => client.appId && onToggleBlacklist(client.appId, !client.blacklisted)}
+          aria-label={client.blacklisted ? 'Enable mirroring' : 'Disable mirroring'}
+          title={
+            !client.appId
+              ? 'Waiting for handshake'
+              : client.blacklisted
+                ? 'Blacklisted - not mirrored. Click to mirror again.'
+                : 'Mirrored. Click to blacklist this app.'
+          }
+        >
+          {client.blacklisted ? (
+            <EyeOff className="w-4 h-4 text-red-400" />
+          ) : (
+            <Eye className="w-4 h-4" />
+          )}
+        </Button>
+      </div>
+      {client.blacklisted && <div className="text-xs text-red-400/90">Blacklisted</div>}
+      {client.activity && (
+        <div
+          className={`rounded-lg bg-zinc-900/60 border p-3 ${
+            client.blacklisted ? 'border-red-900/60 opacity-50' : 'border-zinc-700/60'
+          }`}
+        >
+          <ActivityPreview activity={client.activity} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ClientCarousel({
+  clients,
+  onToggleBlacklist
+}: {
+  clients: ConnectedClient[]
+  onToggleBlacklist: ToggleBlacklist
+}): React.JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [index, setIndex] = useState(0)
+
+  const current = Math.min(index, clients.length - 1)
+
+  const scrollTo = (i: number): void => {
+    scrollRef.current?.scrollTo({ left: i * scrollRef.current.clientWidth, behavior: 'smooth' })
+  }
+
+  const onScroll = (): void => {
+    const el = scrollRef.current
+    if (el) setIndex(Math.round(el.scrollLeft / el.clientWidth))
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="flex overflow-x-auto snap-x snap-mandatory [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {clients.map((client) => (
+          <div key={client.id} className="w-full shrink-0 snap-center">
+            <ClientRow client={client} onToggleBlacklist={onToggleBlacklist} />
+          </div>
+        ))}
+      </div>
+
+      {clients.length > 1 && (
+        <div className="flex items-center justify-between">
+          <Button
+            variant="ghost"
+            className="p-1"
+            onClick={() => scrollTo(current - 1)}
+            disabled={current === 0}
+            aria-label="Previous client"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <div className="flex gap-1.5">
+            {clients.map((client, i) => (
+              <button
+                key={client.id}
+                onClick={() => scrollTo(i)}
+                aria-label={`Show client ${i + 1}`}
+                className={`w-1.5 h-1.5 rounded-full transition-colors ${
+                  client.blacklisted
+                    ? i === current
+                      ? 'bg-red-400'
+                      : 'bg-red-900 hover:bg-red-700'
+                    : i === current
+                      ? 'bg-zinc-300'
+                      : 'bg-zinc-600 hover:bg-zinc-500'
+                }`}
+              />
+            ))}
+          </div>
+          <Button
+            variant="ghost"
+            className="p-1"
+            onClick={() => scrollTo(current + 1)}
+            disabled={current === clients.length - 1}
+            aria-label="Next client"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -135,6 +260,10 @@ export function App(): React.JSX.Element {
 
   const onToggleMirror = async (index: number, enabled: boolean): Promise<void> => {
     setStatus(await window.api.setMirrorEnabled(index, enabled))
+  }
+
+  const onToggleBlacklist = async (appId: string, blacklisted: boolean): Promise<void> => {
+    setStatus(await window.api.setAppBlacklisted(appId, blacklisted))
   }
 
   const onToggleAutostart = async (enabled: boolean): Promise<void> => {
@@ -193,6 +322,33 @@ export function App(): React.JSX.Element {
               onChange={onToggleStartMinimized}
               disabled={!autostart}
             />
+          </div>
+        </section>
+
+        <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex flex-col gap-2">
+          <h2 className="text-sm text-zinc-400 mb-1">Blacklisted apps</h2>
+          <div className="flex flex-col gap-1.5 text-sm">
+            {status.blacklistedApps.length > 0 ? (
+              status.blacklistedApps.map((app) => (
+                <div key={app.id} className="flex items-center justify-between gap-2">
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-zinc-300 truncate">{app.name ?? 'Unknown app'}</span>
+                    <span className="text-xs text-zinc-500 truncate">{app.id}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    className="p-1 shrink-0"
+                    onClick={() => onToggleBlacklist(app.id, false)}
+                    aria-label={`Remove ${app.name ?? app.id} from blacklist`}
+                    title="Remove from blacklist and mirror again"
+                  >
+                    <EyeOff className="w-4 h-4 text-red-400" />
+                  </Button>
+                </div>
+              ))
+            ) : (
+              <div className="text-zinc-500">No blacklisted apps</div>
+            )}
           </div>
         </section>
 
@@ -265,31 +421,24 @@ export function App(): React.JSX.Element {
       </section>
 
       <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex flex-col gap-2">
-        <h2 className="text-sm text-zinc-400 mb-1">Connected RPC Clients</h2>
-        <div className="flex flex-col gap-1.5 text-sm">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm text-zinc-400">Connected RPC Clients</h2>
+          {status.connectedClients.length > 0 && (
+            <span className="text-xs text-zinc-500 bg-zinc-700/60 rounded-full px-2 py-0.5">
+              {status.connectedClients.length}
+            </span>
+          )}
+        </div>
+        <div className="text-sm">
           {status.connectedClients.length > 0 ? (
-            status.connectedClients.map((client) => (
-              <div key={client.id} className="flex items-center justify-between gap-2">
-                <span className="text-zinc-300">
-                  {client.process
-                    ? `${client.process.name} (pid ${client.process.pid})`
-                    : 'unknown process'}
-                </span>
-              </div>
-            ))
+            <ClientCarousel
+              clients={status.connectedClients}
+              onToggleBlacklist={onToggleBlacklist}
+            />
           ) : (
             <div className="text-zinc-500">No clients connected</div>
           )}
         </div>
-      </section>
-
-      <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex flex-col gap-2">
-        <h2 className="text-sm text-zinc-400 mb-1">Last Mirrored Activity</h2>
-        {status.lastActivity ? (
-          <ActivityPreview activity={status.lastActivity} />
-        ) : (
-          <div className="text-sm text-zinc-300">No activity yet</div>
-        )}
       </section>
 
       <p className="text-xs text-zinc-500 mt-auto">

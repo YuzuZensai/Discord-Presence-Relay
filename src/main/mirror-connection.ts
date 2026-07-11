@@ -1,10 +1,7 @@
 import * as net from 'net'
 import { encodeFrame, FrameReader, OP_FRAME, OP_HANDSHAKE } from './ipc-protocol'
 
-/**
- * A lazily-established connection to a secondary Discord instance that
- * mirrors the primary connection's handshake and SET_ACTIVITY frames.
- */
+const READY_TIMEOUT_MS = 10_000
 
 export class MirrorConnection {
   private readonly sock: net.Socket
@@ -16,23 +13,28 @@ export class MirrorConnection {
   constructor(socketPath: string, handshakePayload: Buffer, onClose: () => void) {
     this.sock = net.createConnection(socketPath)
 
+    const readyTimeout = setTimeout(() => this.sock.destroy(), READY_TIMEOUT_MS)
+    readyTimeout.unref()
+
     this.sock.on('connect', () => {
       this.sock.write(encodeFrame(OP_HANDSHAKE, handshakePayload))
     })
 
-    // Discord sends a READY dispatch after the handshake; only once that
-    // arrives will it accept further commands like SET_ACTIVITY.
     this.sock.on('data', (chunk: Buffer) => {
       const hadFrames = this.reader.push(chunk).length > 0
       if (hadFrames && !this.ready) {
         this.ready = true
+        clearTimeout(readyTimeout)
         for (const frame of this.pending.splice(0)) this.sock.write(frame)
         if (this.closeAfterPending) this.sock.end()
       }
     })
 
-    this.sock.on('error', onClose)
-    this.sock.on('close', onClose)
+    this.sock.on('error', () => {})
+    this.sock.on('close', () => {
+      clearTimeout(readyTimeout)
+      onClose()
+    })
   }
 
   sendActivity(payload: Buffer): void {
@@ -44,7 +46,6 @@ export class MirrorConnection {
     }
   }
 
-  /** Sends a final frame (after the handshake) and closes the connection once it has been flushed. */
   sendActivityAndClose(payload: Buffer): void {
     const frame = encodeFrame(OP_FRAME, payload)
     if (this.ready) {

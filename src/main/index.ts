@@ -3,7 +3,7 @@ import { join } from 'path'
 import * as fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { relay, RelayStatus } from './relay'
+import { relay, BlacklistedApp, RelayStatus } from './relay'
 
 declare const __COMMIT_HASH__: string
 
@@ -13,7 +13,17 @@ function settingsPath(): string {
 
 interface Settings {
   disabledMirrors: number[]
+  blacklistedApps: BlacklistedApp[]
   startMinimized: boolean
+}
+
+function parseBlacklistedApps(raw: unknown): BlacklistedApp[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((entry): BlacklistedApp[] =>
+    entry && typeof entry.id === 'string'
+      ? [{ id: entry.id, name: typeof entry.name === 'string' ? entry.name : null }]
+      : []
+  )
 }
 
 function loadSettings(): Settings {
@@ -22,15 +32,19 @@ function loadSettings(): Settings {
     const data = JSON.parse(raw)
     return {
       disabledMirrors: Array.isArray(data?.disabledMirrors) ? data.disabledMirrors : [],
+      blacklistedApps: parseBlacklistedApps(data?.blacklistedApps),
       startMinimized: data?.startMinimized === true
     }
   } catch {
-    return { disabledMirrors: [], startMinimized: false }
+    return { disabledMirrors: [], blacklistedApps: [], startMinimized: false }
   }
 }
 
 function saveSettings(settings: Settings): void {
-  fs.writeFileSync(settingsPath(), JSON.stringify(settings), 'utf8')
+  const target = settingsPath()
+  const tmp = `${target}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(settings), 'utf8')
+  fs.renameSync(tmp, target)
 }
 
 const LINUX_AUTOSTART_DESKTOP_FILE = join(
@@ -202,6 +216,7 @@ app.whenReady().then(() => {
 
   const settings = loadSettings()
   relay.setDisabledMirrors(settings.disabledMirrors)
+  relay.setBlacklistedApps(settings.blacklistedApps)
 
   ipcMain.handle('relay:get-version', () => ({
     version: app.getVersion(),
@@ -244,6 +259,12 @@ app.whenReady().then(() => {
     saveSettings({ ...current, disabledMirrors: relay.getDisabledMirrors() })
     return status
   })
+  ipcMain.handle('relay:set-app-blacklisted', (_e, appId: string, blacklisted: boolean) => {
+    const status = relay.setAppBlacklisted(appId, blacklisted)
+    const current = loadSettings()
+    saveSettings({ ...current, blacklistedApps: relay.getBlacklistedApps() })
+    return status
+  })
 
   relay.on('status', (status: RelayStatus) => {
     updateTrayMenu(status)
@@ -260,16 +281,40 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {
-  // Keep running in the tray
-})
+app.on('window-all-closed', () => {})
 
 let stopping = false
+
+const QUIT_TIMEOUT_MS = 5000
 
 app.on('before-quit', (e) => {
   quitting = true
   if (stopping) return
   stopping = true
   e.preventDefault()
-  relay.stop().finally(() => app.exit(0))
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, QUIT_TIMEOUT_MS))
+  Promise.race([relay.stop(), timeout])
+    .catch(() => {})
+    .finally(() => {
+      relay.emergencyRestoreSync()
+      app.exit(0)
+    })
+})
+
+// Electron doesn't reliably turn SIGTERM/SIGHUP into a quit on Linux.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    quitting = true
+    app.quit()
+  })
+}
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err)
+  relay.emergencyRestoreSync()
+  app.exit(1)
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason)
 })

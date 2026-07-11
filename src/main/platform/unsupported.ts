@@ -2,9 +2,6 @@ import type { ClaimedSocket, ProcessInfo, RelayPlatform } from './types'
 
 const NOT_SUPPORTED = new Error('Platform not supported')
 
-/**
- * Placeholder for platforms without a real implementation yet.
- */
 export class UnsupportedPlatform implements RelayPlatform {
   readonly isSupported = false
 
@@ -28,16 +25,24 @@ export class UnsupportedPlatform implements RelayPlatform {
     throw NOT_SUPPORTED
   }
 
-  discoverAndClaim(): ClaimedSocket[] {
+  async discoverAndClaim(): Promise<ClaimedSocket[]> {
     throw NOT_SUPPORTED
   }
 
-  discoverNewSocket(): ClaimedSocket | null {
+  async discoverNewSocket(): Promise<ClaimedSocket | null> {
     throw NOT_SUPPORTED
   }
 
   restoreSocket(): void {
     throw NOT_SUPPORTED
+  }
+
+  discardClaimedSocket(): void {
+    throw NOT_SUPPORTED
+  }
+
+  async isSocketAlive(): Promise<boolean> {
+    return false
   }
 
   getInstanceProcess(): ProcessInfo | null {

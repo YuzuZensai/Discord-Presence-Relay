@@ -2,6 +2,7 @@ import { PosixPlatform } from './posix'
 import { UnsupportedPlatform } from './unsupported'
 import type { RelayPlatform } from './types'
 
+export { MAX_SOCKETS } from './types'
 export type { ClaimedSocket, ProcessInfo, RelayPlatform } from './types'
 
 export const platform: RelayPlatform =

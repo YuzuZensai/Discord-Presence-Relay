@@ -3,11 +3,13 @@ import { EventEmitter } from 'events'
 import * as net from 'net'
 import { encodeFrame, Frame, FrameReader, OP_HANDSHAKE, parseFramePayload } from './ipc-protocol'
 import { MirrorConnection } from './mirror-connection'
-import { platform, type ClaimedSocket, type ProcessInfo } from './platform'
+import { platform, MAX_SOCKETS, type ClaimedSocket, type ProcessInfo } from './platform'
 
-const MAX_SOCKETS = 10
 const DISCOVERY_INTERVAL_MS = 3000
 const WAITING_RETRY_INTERVAL_MS = 3000
+const MIRROR_RECONNECT_DELAY_MS = 2000
+const SERVER_CLOSE_TIMEOUT_MS = 2000
+const ASSET_FETCH_RETRY_MS = 60_000
 
 interface AppAsset {
   id: string
@@ -15,25 +17,40 @@ interface AppAsset {
   name: string
 }
 
-const appAssetCache = new Map<string, Map<string, string>>()
+interface AssetCacheEntry {
+  map: Map<string, string>
+  expires: number
+}
+
+const appAssetCache = new Map<string, AssetCacheEntry>()
 
 async function getAppAssetMap(appId: string): Promise<Map<string, string>> {
   const cached = appAssetCache.get(appId)
-  if (cached) return cached
+  if (cached && Date.now() < cached.expires) return cached.map
 
   const map = new Map<string, string>()
+  let expires = Number.POSITIVE_INFINITY
   try {
     const res = await fetch(`https://discord.com/api/v9/oauth2/applications/${appId}/assets`)
     if (res.ok) {
       const assets = (await res.json()) as AppAsset[]
       for (const asset of assets) map.set(asset.name, asset.id)
+    } else {
+      expires = Date.now() + ASSET_FETCH_RETRY_MS
     }
   } catch {
-    // Network error: cache an empty map so we don't retry every frame.
+    expires = Date.now() + ASSET_FETCH_RETRY_MS
   }
 
-  appAssetCache.set(appId, map)
+  appAssetCache.set(appId, { map, expires })
   return map
+}
+
+function clearActivityPayload(pid: number): Buffer {
+  return Buffer.from(
+    JSON.stringify({ cmd: 'SET_ACTIVITY', args: { pid, activity: null }, nonce: randomUUID() }),
+    'utf8'
+  )
 }
 
 async function resolveAssetImage(
@@ -68,9 +85,17 @@ export interface RelayInstance {
   process: ProcessInfo | null
 }
 
+export interface BlacklistedApp {
+  id: string
+  name: string | null
+}
+
 export interface ConnectedClient {
   id: number
   process: ProcessInfo | null
+  appId: string | null
+  blacklisted: boolean
+  activity: LastActivity | null
 }
 
 export interface ActivityAssets {
@@ -106,30 +131,41 @@ export interface RelayStatus {
   unsupported: boolean
   instances: RelayInstance[]
   connectedClients: ConnectedClient[]
-  lastActivity: LastActivity | null
+  blacklistedApps: BlacklistedApp[]
   error: string | null
 }
 
-/**
- * Takes over Discord's primary IPC socket (discord-ipc-0), passing every
- * frame through to the real primary instance unchanged, while mirroring the
- * handshake and SET_ACTIVITY frames to any other running Discord instances.
- */
+interface ClientSession {
+  id: number
+  client: net.Socket
+  primary: net.Socket
+  process: ProcessInfo | null
+  handshakePayload: Buffer | null
+  appId: string | null
+  lastActivityPayload: Buffer | null
+  lastActivityPid: number | null
+  activity: LastActivity | null
+  mirrors: Map<number, MirrorConnection>
+  reconnectTimers: Map<number, NodeJS.Timeout>
+  closed: boolean
+}
+
+/** Hijacks discord-ipc-0, passthrough to primary, mirroring frames to other instances. */
 export class RpcRelay extends EventEmitter {
   private server: net.Server | null = null
   private claimed: ClaimedSocket[] = []
   private disabledMirrors = new Set<number>()
-  private connectedClients = new Map<number, ConnectedClient>()
+  private blacklistedApps = new Map<string, string | null>()
+  private sessions = new Map<number, ClientSession>()
   private nextClientId = 1
   private discoveryTimer: NodeJS.Timeout | null = null
+  private discovering = false
   private waitingTimer: NodeJS.Timeout | null = null
-  private lastActivity: LastActivity | null = null
   private running = false
   private waiting = false
+  private fakeOwned = false
   private lastError: string | null = null
   private restarting = false
-  private mirrors = new Map<number, MirrorConnection>()
-  private lastActivityPid = new Map<number, number>()
 
   getStatus(): RelayStatus {
     const instances: RelayInstance[] = this.claimed.map(({ index, path: socketPath }, i) => ({
@@ -145,8 +181,14 @@ export class RpcRelay extends EventEmitter {
       waiting: this.waiting,
       unsupported: !platform.isSupported,
       instances,
-      connectedClients: [...this.connectedClients.values()],
-      lastActivity: this.lastActivity,
+      connectedClients: [...this.sessions.values()].map((s) => ({
+        id: s.id,
+        process: s.process,
+        appId: s.appId,
+        blacklisted: this.isBlacklisted(s),
+        activity: s.activity
+      })),
+      blacklistedApps: this.getBlacklistedApps(),
       error: this.lastError
     }
   }
@@ -172,6 +214,60 @@ export class RpcRelay extends EventEmitter {
     this.disabledMirrors = new Set(indices)
   }
 
+  getBlacklistedApps(): BlacklistedApp[] {
+    return [...this.blacklistedApps].map(([id, name]) => ({ id, name }))
+  }
+
+  setBlacklistedApps(apps: BlacklistedApp[]): void {
+    this.blacklistedApps = new Map(apps.map((a) => [a.id, a.name]))
+  }
+
+  setAppBlacklisted(appId: string, blacklisted: boolean): RelayStatus {
+    if (blacklisted) {
+      const session = [...this.sessions.values()].find((s) => s.appId === appId)
+      const name = session?.activity?.app ?? session?.process?.name ?? null
+      this.blacklistedApps.set(appId, name ?? this.blacklistedApps.get(appId) ?? null)
+    } else {
+      this.blacklistedApps.delete(appId)
+    }
+
+    for (const session of this.sessions.values()) {
+      if (session.appId !== appId) continue
+      if (blacklisted) {
+        this.clearSessionMirrors(session)
+      } else if (session.lastActivityPayload) {
+        for (let i = 1; i < this.claimed.length; i++) {
+          const target = this.claimed[i]
+          if (this.disabledMirrors.has(target.index)) continue
+          if (this.ensureMirror(session, target)) {
+            session.mirrors.get(target.index)?.sendActivity(session.lastActivityPayload)
+          }
+        }
+      }
+    }
+
+    this.emitStatus()
+    return this.getStatus()
+  }
+
+  private isBlacklisted(session: ClientSession): boolean {
+    return session.appId !== null && this.blacklistedApps.has(session.appId)
+  }
+
+  private clearSessionMirrors(session: ClientSession): void {
+    for (const timer of session.reconnectTimers.values()) clearTimeout(timer)
+    session.reconnectTimers.clear()
+
+    for (const mirror of session.mirrors.values()) {
+      if (session.lastActivityPid !== null) {
+        mirror.sendActivityAndClose(clearActivityPayload(session.lastActivityPid))
+      } else {
+        mirror.destroy()
+      }
+    }
+    session.mirrors.clear()
+  }
+
   async start(): Promise<void> {
     if (this.running) return
     this.lastError = null
@@ -183,34 +279,46 @@ export class RpcRelay extends EventEmitter {
     }
 
     await platform.recoverLeftoverSockets()
-    this.claimed = platform.discoverAndClaim()
+    const claimed = await platform.discoverAndClaim()
 
-    if (this.claimed.length === 0) {
+    if (claimed.length === 0) {
       this.waitForDiscord()
       return
     }
 
+    this.claimed = claimed
     this.waiting = false
     this.stopWaitingTimer()
 
-    const fake = platform.fakeSocketPath()
-    platform.removeFakeSocket(fake)
+    try {
+      const fake = platform.fakeSocketPath()
+      platform.removeFakeSocket(fake)
 
-    this.server = net.createServer((sock) => this.handleClient(sock))
-    this.server.on('error', (err) => {
-      this.lastError = err.message
-      this.emitStatus()
-    })
-
-    await new Promise<void>((resolve, reject) => {
-      this.server!.once('error', reject)
-      this.server!.listen(fake, () => {
-        this.server!.removeListener('error', reject)
-        resolve()
+      this.server = net.createServer((sock) => this.handleClient(sock))
+      this.server.on('error', (err) => {
+        this.lastError = err.message
+        this.emitStatus()
       })
-    })
 
-    platform.finalizeFakeSocket(fake)
+      await new Promise<void>((resolve, reject) => {
+        this.server!.once('error', reject)
+        this.server!.listen(fake, () => {
+          this.server!.removeListener('error', reject)
+          resolve()
+        })
+      })
+
+      platform.finalizeFakeSocket(fake)
+      this.fakeOwned = true
+    } catch (err) {
+      this.server?.close()
+      this.server = null
+      for (const c of this.claimed) platform.restoreSocket(c)
+      this.claimed = []
+      this.lastError = err instanceof Error ? err.message : String(err)
+      this.emitStatus()
+      throw err
+    }
 
     this.running = true
     this.startDiscoveryTimer()
@@ -228,21 +336,39 @@ export class RpcRelay extends EventEmitter {
     this.running = false
     this.stopDiscoveryTimer()
 
+    for (const session of [...this.sessions.values()]) this.destroySession(session)
+
     if (this.server) {
-      await new Promise<void>((resolve) => this.server!.close(() => resolve()))
+      const server = this.server
       this.server = null
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, SERVER_CLOSE_TIMEOUT_MS)
+        server.close(() => {
+          clearTimeout(timeout)
+          resolve()
+        })
+      })
     }
 
     platform.removeFakeSocket(platform.fakeSocketPath())
+    this.fakeOwned = false
     for (const claimed of this.claimed) platform.restoreSocket(claimed)
 
-    for (const mirror of this.mirrors.values()) mirror.destroy()
-    this.mirrors.clear()
-    this.lastActivityPid.clear()
-
     this.claimed = []
-    this.connectedClients.clear()
     this.emitStatus()
+  }
+
+  emergencyRestoreSync(): void {
+    try {
+      if (this.fakeOwned) {
+        platform.removeFakeSocket(platform.fakeSocketPath())
+        this.fakeOwned = false
+      }
+    } catch {
+      // Best effort.
+    }
+    for (const claimed of this.claimed) platform.restoreSocket(claimed)
+    this.claimed = []
   }
 
   private primaryIndex(): number | undefined {
@@ -273,7 +399,7 @@ export class RpcRelay extends EventEmitter {
 
   private startDiscoveryTimer(): void {
     this.stopDiscoveryTimer()
-    this.discoveryTimer = setInterval(() => this.discoverNewInstances(), DISCOVERY_INTERVAL_MS)
+    this.discoveryTimer = setInterval(() => void this.discoverInstances(), DISCOVERY_INTERVAL_MS)
   }
 
   private stopDiscoveryTimer(): void {
@@ -283,66 +409,104 @@ export class RpcRelay extends EventEmitter {
     }
   }
 
-  /** Picks up Discord instances launched after the relay started, and recovers from a stolen primary socket. */
-  private discoverNewInstances(): void {
-    if (!this.running) return
+  /** Periodic: recover stolen primary, prune dead instances, discover new ones. */
+  private async discoverInstances(): Promise<void> {
+    if (!this.running || this.discovering) return
+    this.discovering = true
+    try {
+      if (!platform.fakeSocketExists(platform.fakeSocketPath())) {
+        void this.restart()
+        return
+      }
 
-    if (!platform.fakeSocketExists(platform.fakeSocketPath())) {
-      void this.restart()
-      return
-    }
+      let changed = false
 
-    const claimedIndices = new Set(this.claimed.map((c) => c.index))
-    let changed = false
+      for (const claimed of [...this.claimed]) {
+        if (await platform.isSocketAlive(claimed.path)) continue
+        if (!this.running) return
 
-    for (let i = 1; i < MAX_SOCKETS; i++) {
-      if (claimedIndices.has(i)) continue
-      const found = platform.discoverNewSocket(i)
-      if (found) {
-        this.claimed.push(found)
+        if (claimed === this.claimed[0]) {
+          void this.restart()
+          return
+        }
+
+        this.claimed = this.claimed.filter((c) => c !== claimed)
+        platform.discardClaimedSocket(claimed)
+        for (const session of this.sessions.values()) {
+          this.dropSessionMirror(session, claimed.index)
+        }
         changed = true
       }
-    }
 
-    if (changed) this.emitStatus()
+      const claimedIndices = new Set(this.claimed.map((c) => c.index))
+      for (let i = 1; i < MAX_SOCKETS; i++) {
+        if (claimedIndices.has(i)) continue
+        const found = await platform.discoverNewSocket(i)
+        if (!found) continue
+        if (!this.running) {
+          platform.restoreSocket(found)
+          return
+        }
+
+        this.claimed.push(found)
+        changed = true
+
+        if (!this.disabledMirrors.has(found.index)) {
+          for (const session of this.sessions.values()) {
+            if (this.isBlacklisted(session)) continue
+            if (this.ensureMirror(session, found) && session.lastActivityPayload) {
+              session.mirrors.get(found.index)?.sendActivity(session.lastActivityPayload)
+            }
+          }
+        }
+      }
+
+      if (changed) this.emitStatus()
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err)
+      this.emitStatus()
+    } finally {
+      this.discovering = false
+    }
   }
 
   private handleClient(client: net.Socket): void {
-    const clientId = this.nextClientId++
+    const primaryClaimed = this.claimed[0]
+    if (!primaryClaimed) {
+      client.destroy()
+      return
+    }
+
     const fd = (client as unknown as { _handle?: { fd?: number } })._handle?.fd
-    this.connectedClients.set(clientId, {
-      id: clientId,
-      process: fd !== undefined ? platform.getPeerProcess(fd) : null
-    })
+    const session: ClientSession = {
+      id: this.nextClientId++,
+      client,
+      primary: net.createConnection(primaryClaimed.path),
+      process: fd !== undefined ? platform.getPeerProcess(fd) : null,
+      handshakePayload: null,
+      appId: null,
+      lastActivityPayload: null,
+      lastActivityPid: null,
+      activity: null,
+      mirrors: new Map(),
+      reconnectTimers: new Map(),
+      closed: false
+    }
+    this.sessions.set(session.id, session)
     this.emitStatus()
 
-    const primaryPath = this.claimed[0].path
-    const primary = net.createConnection(primaryPath)
-
+    const { primary } = session
     const clientReader = new FrameReader()
     const primaryReader = new FrameReader()
 
-    let handshakePayload: Buffer | null = null
-
-    const cleanup = (): void => {
-      client.destroy()
-      primary.destroy()
-      for (const mirror of this.mirrors.values()) mirror.destroy()
-      this.mirrors.clear()
-      this.lastActivityPid.clear()
-      this.connectedClients.delete(clientId)
-      this.emitStatus()
-    }
-
-    let clientAppId: string | null = null
     let primaryConnected = false
     const pendingToPrimary: Buffer[] = []
 
     client.on('data', (chunk: Buffer) => {
       for (const frame of clientReader.push(chunk)) {
         if (frame.op === OP_HANDSHAKE) {
-          handshakePayload = frame.payload
-          clientAppId = (parseFramePayload(frame)?.client_id as string) ?? null
+          session.handshakePayload = frame.payload
+          session.appId = (parseFramePayload(frame)?.client_id as string) ?? null
         }
 
         const encoded = encodeFrame(frame.op, frame.payload)
@@ -352,8 +516,8 @@ export class RpcRelay extends EventEmitter {
           pendingToPrimary.push(encoded)
         }
 
-        if (handshakePayload) this.mirrorFrame(frame, handshakePayload)
-        void this.recordActivity(frame, clientAppId)
+        if (session.handshakePayload) this.mirrorFrame(session, frame)
+        void this.recordActivity(session, frame)
       }
     })
 
@@ -368,21 +532,48 @@ export class RpcRelay extends EventEmitter {
       })
     })
 
+    const cleanup = (): void => this.destroySession(session)
+
     client.on('error', cleanup)
+    client.on('close', cleanup)
+    primary.on('close', cleanup)
     primary.on('error', (err) => {
       cleanup()
-      if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ECONNREFUSED' || code === 'ENOENT') {
         void this.restart()
       } else {
         this.lastError = `Primary connection error: ${err.message}`
         this.emitStatus()
       }
     })
-    client.on('close', cleanup)
-    primary.on('close', cleanup)
   }
 
-  /** Restarts the relay, picking up any Discord instance that has replaced its IPC socket. */
+  private destroySession(session: ClientSession): void {
+    if (session.closed) return
+    session.closed = true
+
+    session.client.destroy()
+    session.primary.destroy()
+    for (const timer of session.reconnectTimers.values()) clearTimeout(timer)
+    session.reconnectTimers.clear()
+    for (const mirror of session.mirrors.values()) mirror.destroy()
+    session.mirrors.clear()
+
+    this.sessions.delete(session.id)
+    this.emitStatus()
+  }
+
+  private dropSessionMirror(session: ClientSession, index: number): void {
+    const timer = session.reconnectTimers.get(index)
+    if (timer) {
+      clearTimeout(timer)
+      session.reconnectTimers.delete(index)
+    }
+    session.mirrors.get(index)?.destroy()
+    session.mirrors.delete(index)
+  }
+
   private async restart(): Promise<void> {
     if (this.restarting) return
     this.restarting = true
@@ -397,79 +588,106 @@ export class RpcRelay extends EventEmitter {
     }
   }
 
-  /** Forwards the handshake and SET_ACTIVITY frames to every enabled mirror instance. */
-  private mirrorFrame(frame: Frame, handshakePayload: Buffer): void {
+  private mirrorFrame(session: ClientSession, frame: Frame): void {
     const payload = frame.op !== OP_HANDSHAKE ? parseFramePayload(frame) : null
     const isSetActivity = payload?.cmd === 'SET_ACTIVITY'
     if (frame.op !== OP_HANDSHAKE && !isSetActivity) return
 
     if (isSetActivity) {
+      session.lastActivityPayload = frame.payload
       const pid = (payload!.args as { pid?: number } | undefined)?.pid
-      if (typeof pid === 'number') {
-        for (let i = 1; i < this.claimed.length; i++) {
-          this.lastActivityPid.set(this.claimed[i].index, pid)
-        }
-      }
+      if (typeof pid === 'number') session.lastActivityPid = pid
     }
 
+    if (this.isBlacklisted(session)) return
+
     for (let i = 1; i < this.claimed.length; i++) {
-      const { index, path: mirrorPath } = this.claimed[i]
+      const { index } = this.claimed[i]
 
       if (this.disabledMirrors.has(index)) {
-        this.mirrors.get(index)?.destroy()
-        this.mirrors.delete(index)
+        this.dropSessionMirror(session, index)
         continue
       }
 
-      let mirror = this.mirrors.get(index)
-      if (!mirror) {
-        const newMirror: MirrorConnection = new MirrorConnection(
-          mirrorPath,
-          handshakePayload,
-          () => {
-            if (this.mirrors.get(index) === newMirror) this.mirrors.delete(index)
-          }
-        )
-        mirror = newMirror
-        this.mirrors.set(index, mirror)
-        if (frame.op === OP_HANDSHAKE) continue // handshake already sent on connect
+      this.ensureMirror(session, this.claimed[i])
+      if (frame.op !== OP_HANDSHAKE) session.mirrors.get(index)?.sendActivity(frame.payload)
+    }
+  }
+
+  private ensureMirror(session: ClientSession, target: ClaimedSocket): boolean {
+    if (session.closed || !session.handshakePayload) return false
+    if (session.mirrors.has(target.index)) return false
+
+    const mirror: MirrorConnection = new MirrorConnection(
+      target.path,
+      session.handshakePayload,
+      () => {
+        if (session.mirrors.get(target.index) === mirror) {
+          session.mirrors.delete(target.index)
+          this.scheduleMirrorReconnect(session, target.index)
+        }
+      }
+    )
+    session.mirrors.set(target.index, mirror)
+    return true
+  }
+
+  private scheduleMirrorReconnect(session: ClientSession, index: number): void {
+    if (session.closed || !this.running) return
+    if (session.reconnectTimers.has(index)) return
+
+    const timer = setTimeout(() => {
+      session.reconnectTimers.delete(index)
+      if (session.closed || !this.running) return
+      if (this.disabledMirrors.has(index) || this.isBlacklisted(session)) return
+      if (!session.lastActivityPayload) return
+
+      const target = this.claimed.find((c, i) => i > 0 && c.index === index)
+      if (!target) return
+
+      if (this.ensureMirror(session, target)) {
+        session.mirrors.get(index)?.sendActivity(session.lastActivityPayload)
+      }
+    }, MIRROR_RECONNECT_DELAY_MS)
+    session.reconnectTimers.set(index, timer)
+  }
+
+  private clearMirrorActivity(index: number): void {
+    for (const session of this.sessions.values()) {
+      const timer = session.reconnectTimers.get(index)
+      if (timer) {
+        clearTimeout(timer)
+        session.reconnectTimers.delete(index)
       }
 
-      if (frame.op !== OP_HANDSHAKE) mirror.sendActivity(frame.payload)
+      const mirror = session.mirrors.get(index)
+      if (!mirror) continue
+
+      if (session.lastActivityPid !== null) {
+        mirror.sendActivityAndClose(clearActivityPayload(session.lastActivityPid))
+      } else {
+        mirror.destroy()
+      }
+
+      session.mirrors.delete(index)
     }
   }
 
-  /** Sends a SET_ACTIVITY frame clearing the presence on a mirror, then disconnects it. */
-  private clearMirrorActivity(index: number): void {
-    const mirror = this.mirrors.get(index)
-    if (!mirror) return
-
-    const pid = this.lastActivityPid.get(index)
-    if (pid !== undefined) {
-      const clearPayload = Buffer.from(
-        JSON.stringify({
-          cmd: 'SET_ACTIVITY',
-          args: { pid, activity: null },
-          nonce: randomUUID()
-        }),
-        'utf8'
-      )
-      mirror.sendActivityAndClose(clearPayload)
-    } else {
-      mirror.destroy()
-    }
-
-    this.mirrors.delete(index)
-    this.lastActivityPid.delete(index)
-  }
-
-  private async recordActivity(frame: Frame, appId: string | null): Promise<void> {
+  private async recordActivity(session: ClientSession, frame: Frame): Promise<void> {
     if (frame.op === OP_HANDSHAKE) return
 
     const data = parseFramePayload(frame)
     if (data?.cmd !== 'SET_ACTIVITY') return
 
-    const activity = (data.args as { activity?: Record<string, unknown> })?.activity ?? {}
+    const at = Date.now()
+    const appId = session.appId
+    const activity = (data.args as { activity?: Record<string, unknown> | null })?.activity
+
+    if (!activity) {
+      session.activity = null
+      this.emitStatus()
+      return
+    }
 
     const rawAssets = activity.assets as Record<string, string> | undefined
     const assets: ActivityAssets | null = rawAssets
@@ -494,14 +712,18 @@ export class RpcRelay extends EventEmitter {
       ? rawButtons.map((b) => ({ label: b.label, url: b.url }))
       : []
 
-    this.lastActivity = {
+    // Prevent stale network-delayed frames from overwriting newer ones.
+    if (session.closed) return
+    if (session.activity && session.activity.at > at) return
+
+    session.activity = {
       app: (activity.name as string) ?? null,
       details: (activity.details as string) ?? null,
       state: (activity.state as string) ?? null,
       assets,
       timestamps,
       buttons,
-      at: Date.now()
+      at
     }
     this.emitStatus()
   }

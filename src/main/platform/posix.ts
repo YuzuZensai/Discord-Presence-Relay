@@ -2,11 +2,12 @@ import * as fs from 'fs'
 import * as net from 'net'
 import * as path from 'path'
 import { execFileSync } from 'child_process'
-import type { ClaimedSocket, ProcessInfo, RelayPlatform } from './types'
+import { MAX_SOCKETS, type ClaimedSocket, type ProcessInfo, type RelayPlatform } from './types'
 
 const REAL_PREFIX = 'discord-ipc-real-'
 const FAKE_INDEX = 0
-const MAX_SOCKETS = 10
+const ALIVE_CHECK_TIMEOUT_MS = 1000
+const STALE_SOCKET_MIN_AGE_MS = 10_000
 
 function runtimeDir(): string {
   if (process.env.XDG_RUNTIME_DIR) return process.env.XDG_RUNTIME_DIR
@@ -43,45 +44,78 @@ export class PosixPlatform implements RelayPlatform {
 
   async recoverLeftoverSockets(): Promise<void> {
     for (let i = 0; i < MAX_SOCKETS; i++) {
-      const leftover = claimedPath(i)
-      const original = ipcPath(i)
-      if (!fs.existsSync(leftover)) continue
+      try {
+        const leftover = claimedPath(i)
+        const original = ipcPath(i)
+        if (!fs.existsSync(leftover)) continue
 
-      if (!fs.existsSync(original)) {
-        fs.renameSync(leftover, original)
-        continue
-      }
+        if (!fs.existsSync(original)) {
+          fs.renameSync(leftover, original)
+          continue
+        }
 
-      if (!(await isSocketAlive(original))) {
-        fs.unlinkSync(original)
-        fs.renameSync(leftover, original)
+        if (!(await isSocketAlive(original))) {
+          fs.unlinkSync(original)
+          fs.renameSync(leftover, original)
+        }
+      } catch {
+        // Another process may be touching the same files; keep recovering the rest.
       }
     }
   }
 
-  discoverAndClaim(): ClaimedSocket[] {
+  async discoverAndClaim(): Promise<ClaimedSocket[]> {
     const found: ClaimedSocket[] = []
     for (let i = 0; i < MAX_SOCKETS; i++) {
-      const claimed = this.discoverNewSocket(i)
+      const claimed = await this.discoverNewSocket(i)
       if (claimed) found.push(claimed)
     }
     return found
   }
 
-  discoverNewSocket(index: number): ClaimedSocket | null {
+  async discoverNewSocket(index: number): Promise<ClaimedSocket | null> {
     const src = ipcPath(index)
     if (!fs.existsSync(src)) return null
 
+    if (!(await isSocketAlive(src))) {
+      try {
+        if (Date.now() - fs.statSync(src).mtimeMs > STALE_SOCKET_MIN_AGE_MS) fs.unlinkSync(src)
+      } catch {
+        // Already gone.
+      }
+      return null
+    }
+
     const dst = claimedPath(index)
-    fs.renameSync(src, dst)
+    try {
+      fs.renameSync(src, dst)
+    } catch {
+      return null // socket replaced between the check and the rename
+    }
     return { index, path: dst }
   }
 
   restoreSocket(claimed: ClaimedSocket): void {
-    const original = ipcPath(claimed.index)
-    if (fs.existsSync(claimed.path) && !fs.existsSync(original)) {
-      fs.renameSync(claimed.path, original)
+    try {
+      const original = ipcPath(claimed.index)
+      if (fs.existsSync(claimed.path) && !fs.existsSync(original)) {
+        fs.renameSync(claimed.path, original)
+      }
+    } catch {
+      // Best effort.
     }
+  }
+
+  discardClaimedSocket(claimed: ClaimedSocket): void {
+    try {
+      fs.unlinkSync(claimed.path)
+    } catch {
+      // Already gone.
+    }
+  }
+
+  isSocketAlive(socketPath: string): Promise<boolean> {
+    return isSocketAlive(socketPath)
   }
 
   getInstanceProcess(index: number): ProcessInfo | null {
@@ -97,11 +131,16 @@ export class PosixPlatform implements RelayPlatform {
 function isSocketAlive(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = net.createConnection(socketPath)
-    sock.once('connect', () => {
+    let settled = false
+    const done = (alive: boolean): void => {
+      if (settled) return
+      settled = true
       sock.destroy()
-      resolve(true)
-    })
-    sock.once('error', () => resolve(false))
+      resolve(alive)
+    }
+    sock.setTimeout(ALIVE_CHECK_TIMEOUT_MS, () => done(false))
+    sock.once('connect', () => done(true))
+    sock.once('error', () => done(false))
   })
 }
 
