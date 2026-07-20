@@ -1,4 +1,4 @@
-# Discord RPC Relay
+# 🪩 Discord-RPC-Relay
 
 ![Screenshot](assets/screenshot.png)
 
