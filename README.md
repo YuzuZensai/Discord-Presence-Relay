@@ -1,10 +1,10 @@
 # 🪩 Discord-RPC-Relay
 
-![Screenshot](assets/screenshot.png)
-
 Mirrors Discord Rich Presence (RPC) activity to every running Discord
 instance (stable, PTB, Canary, ...), so apps that only connect to the
 primary `discord-ipc-0` socket show their presence everywhere.
+
+![Screenshot](assets/screenshot.png)
 
 It works by taking over `discord-ipc-0`, passing all traffic through to the
 real primary instance unchanged, and forwarding the handshake and
