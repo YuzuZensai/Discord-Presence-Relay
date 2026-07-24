@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Mirrors Discord Rich Presence (RPC) to multiple running Discord instances",
   "main": "./out/main/index.js",
-  "packageManager": "pnpm@11.7.0+sha512.19cc852c120c7125760f2443ee6be0ca5b40f9f50598de1a09a1f177503e010e57c23c77646e01e761de59bf874fb22a3398c33ab9691fc13eb946b6f0f4d620",
+  "packageManager": "pnpm@11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72",
   "author": "",
   "private": true,
   "scripts": {
@@ -25,27 +25,27 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
-    "koffi": "^3.0.2",
-    "lucide-react": "^1.18.0",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "koffi": "^3.1.2",
+    "lucide-react": "^1.25.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
-    "@tailwindcss/vite": "^4.3.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.2.0",
-    "electron": "^43.1.0",
+    "@vitejs/plugin-react": "^6.0.3",
+    "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
-    "eslint": "^10.5.0",
-    "prettier": "^3.8.4",
-    "tailwindcss": "^4.3.1",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.6",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vite": "^7.3.5"
+    "vite": "^8.1.5"
   }
 }
