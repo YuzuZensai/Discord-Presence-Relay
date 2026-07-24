@@ -9,6 +9,10 @@ export class UnsupportedPlatform implements RelayPlatform {
     throw NOT_SUPPORTED
   }
 
+  ipcSocketPath(): string {
+    throw NOT_SUPPORTED
+  }
+
   removeFakeSocket(): void {
     throw NOT_SUPPORTED
   }
@@ -45,11 +49,27 @@ export class UnsupportedPlatform implements RelayPlatform {
     return false
   }
 
+  async removeStaleIpcSocket(): Promise<void> {
+    throw NOT_SUPPORTED
+  }
+
   getInstanceProcess(): ProcessInfo | null {
     return null
   }
 
   getPeerProcess(): ProcessInfo | null {
     return null
+  }
+
+  killProcess(): boolean {
+    return false
+  }
+
+  isProcessAlive(): boolean {
+    return false
+  }
+
+  launchExecutable(): boolean {
+    return false
   }
 }

@@ -3,6 +3,7 @@ export const MAX_SOCKETS = 10
 export interface ProcessInfo {
   pid: number
   name: string
+  executable: string | null
 }
 
 export interface ClaimedSocket {
@@ -14,6 +15,8 @@ export interface RelayPlatform {
   readonly isSupported: boolean
 
   fakeSocketPath(): string
+
+  ipcSocketPath(index: number): string
 
   removeFakeSocket(fakePath: string): void
 
@@ -34,7 +37,15 @@ export interface RelayPlatform {
 
   isSocketAlive(socketPath: string): Promise<boolean>
 
+  removeStaleIpcSocket(index: number): Promise<void>
+
   getInstanceProcess(index: number): ProcessInfo | null
 
   getPeerProcess(fd: number): ProcessInfo | null
+
+  killProcess(pid: number): boolean
+
+  isProcessAlive(pid: number): boolean
+
+  launchExecutable(executable: string): boolean
 }

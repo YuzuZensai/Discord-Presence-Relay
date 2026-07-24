@@ -12,6 +12,9 @@ const EMPTY_STATUS: RelayStatus = {
   instances: [],
   connectedClients: [],
   blacklistedApps: [],
+  lockedPrimary: null,
+  reordering: false,
+  primaryOutOfOrder: false,
   error: null
 }
 
@@ -266,6 +269,14 @@ export function App(): React.JSX.Element {
     setStatus(await window.api.setAppBlacklisted(appId, blacklisted))
   }
 
+  const onUnlockPrimary = async (): Promise<void> => {
+    setStatus(await window.api.unlockPrimary())
+  }
+
+  const onPromote = async (index: number): Promise<void> => {
+    setStatus(await window.api.promoteToPrimary(index))
+  }
+
   const onToggleAutostart = async (enabled: boolean): Promise<void> => {
     setAutostart(await window.api.setAutostart(enabled))
   }
@@ -411,13 +422,22 @@ export function App(): React.JSX.Element {
               <InstanceRow
                 key={instance.index}
                 instance={instance}
+                reordering={status.reordering}
                 onToggleMirror={onToggleMirror}
+                onUnlock={onUnlockPrimary}
+                onPromote={onPromote}
               />
             ))
           ) : (
             <div className="text-zinc-500">No Discord instances detected</div>
           )}
         </div>
+
+        {status.reordering && (
+          <div className="mt-1 text-xs text-amber-300/90">
+            Restarting Discord clients to promote the new primary…
+          </div>
+        )}
       </section>
 
       <section className="rounded-xl bg-zinc-800/60 border border-zinc-700 p-4 flex flex-col gap-2">

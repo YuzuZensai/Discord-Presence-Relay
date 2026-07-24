@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import * as net from 'net'
 import * as path from 'path'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawn } from 'child_process'
 import { MAX_SOCKETS, type ClaimedSocket, type ProcessInfo, type RelayPlatform } from './types'
 
 const REAL_PREFIX = 'discord-ipc-real-'
@@ -9,9 +9,27 @@ const FAKE_INDEX = 0
 const ALIVE_CHECK_TIMEOUT_MS = 1000
 const STALE_SOCKET_MIN_AGE_MS = 10_000
 
+let darwinTempDir: string | null | undefined
+
+// $TMPDIR can be overridden by a shell, so ask the OS where Discord really binds.
+function resolveDarwinTempDir(): string | null {
+  if (darwinTempDir !== undefined) return darwinTempDir
+  try {
+    darwinTempDir = execFileSync('getconf', ['DARWIN_USER_TEMP_DIR'], {
+      encoding: 'utf8',
+      timeout: 1000
+    }).trim()
+  } catch {
+    darwinTempDir = null
+  }
+  return darwinTempDir
+}
+
 function runtimeDir(): string {
   if (process.env.XDG_RUNTIME_DIR) return process.env.XDG_RUNTIME_DIR
-  if (process.platform === 'darwin') return process.env.TMPDIR ?? '/tmp'
+  if (process.platform === 'darwin') {
+    return resolveDarwinTempDir() ?? process.env.TMPDIR ?? '/tmp'
+  }
   return `/run/user/${process.getuid?.() ?? 0}`
 }
 
@@ -28,6 +46,10 @@ export class PosixPlatform implements RelayPlatform {
 
   fakeSocketPath(): string {
     return ipcPath(FAKE_INDEX)
+  }
+
+  ipcSocketPath(index: number): string {
+    return ipcPath(index)
   }
 
   removeFakeSocket(fakePath: string): void {
@@ -118,14 +140,129 @@ export class PosixPlatform implements RelayPlatform {
     return isSocketAlive(socketPath)
   }
 
+  async removeStaleIpcSocket(index: number): Promise<void> {
+    const p = ipcPath(index)
+    if (!fs.existsSync(p)) return
+    if (await isSocketAlive(p)) return
+    try {
+      fs.unlinkSync(p)
+    } catch {
+      // Already gone or replaced.
+    }
+  }
+
   getInstanceProcess(index: number): ProcessInfo | null {
-    // /proc/net/unix reports the original bind path even after the file is renamed on disk
+    // lsof/procfs still report the original bind path even after we rename to -real-N.
     return findSocketOwner(ipcPath(index))
   }
 
   getPeerProcess(fd: number): ProcessInfo | null {
     return findPeerProcess(fd)
   }
+
+  killProcess(pid: number): boolean {
+    try {
+      process.kill(pid, 'SIGTERM')
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  isProcessAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (err) {
+      // EPERM means it's alive, we just aren't allowed to touch it.
+      return (err as NodeJS.ErrnoException).code === 'EPERM'
+    }
+  }
+
+  launchExecutable(executable: string): boolean {
+    try {
+      // Point Discord at the temp dir we watch, whatever TMPDIR we inherited.
+      const env = { ...process.env }
+
+      if (process.platform === 'darwin') {
+        // Spawning the .app binary directly just dies, so let `open` launch it.
+        const canonical = resolveDarwinTempDir()
+        if (canonical) env.TMPDIR = canonical
+
+        const appPath = executable.includes('.app/')
+          ? executable.slice(0, executable.indexOf('.app/') + '.app'.length)
+          : executable
+        const child = spawn('open', ['-a', appPath], { detached: true, stdio: 'ignore', env })
+        child.unref()
+        return true
+      }
+
+      const child = spawn(executable, [], { detached: true, stdio: 'ignore', env })
+      child.unref()
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+// The pid holding the socket is usually a helper; walk up to the real app process.
+function resolveMainAppProcess(pid: number): ProcessInfo | null {
+  if (process.platform !== 'darwin') return null
+
+  const exe = executablePath(pid)
+  const bundle = bundleRoot(exe)
+  if (!bundle) return null
+
+  let mainPid = pid
+  let mainExe = exe
+  for (let depth = 0; depth < 20; depth++) {
+    const ppid = parentPid(mainPid)
+    if (ppid === null || ppid <= 1) break
+    const parentExe = executablePath(ppid)
+    if (bundleRoot(parentExe) !== bundle) break
+    mainPid = ppid
+    mainExe = parentExe
+  }
+
+  return { pid: mainPid, name: path.basename(mainExe ?? String(mainPid)), executable: mainExe }
+}
+
+function bundleRoot(exe: string | null): string | null {
+  if (!exe) return null
+  const idx = exe.indexOf('.app/Contents/')
+  return idx >= 0 ? exe.slice(0, idx + '.app'.length) : null
+}
+
+function parentPid(pid: number): number | null {
+  try {
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'ppid='], {
+      encoding: 'utf8',
+      timeout: 1000
+    }).trim()
+    const ppid = parseInt(out, 10)
+    return Number.isNaN(ppid) ? null : ppid
+  } catch {
+    return null
+  }
+}
+
+function executablePath(pid: number): string | null {
+  try {
+    if (process.platform === 'linux') {
+      return fs.readlinkSync(`/proc/${pid}/exe`)
+    }
+    if (process.platform === 'darwin') {
+      const out = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], {
+        encoding: 'utf8',
+        timeout: 1000
+      }).trim()
+      return out || null
+    }
+  } catch {
+    return null
+  }
+  return null
 }
 
 function isSocketAlive(socketPath: string): Promise<boolean> {
@@ -176,7 +313,13 @@ function locateSocketOwnerMacOS(socketPath: string): ProcessInfo | null {
         currentName = line.slice(1)
       } else if (line.startsWith('n') && line.slice(1) === socketPath) {
         if (currentPid > 0 && currentPid !== process.pid) {
-          return { pid: currentPid, name: currentName }
+          return (
+            resolveMainAppProcess(currentPid) ?? {
+              pid: currentPid,
+              name: currentName,
+              executable: executablePath(currentPid)
+            }
+          )
         }
       }
     }
@@ -236,7 +379,8 @@ function findProcessForInodes(inodes: Set<string>): ProcessInfo | null {
         }
         const match = /^socket:\[(\d+)\]$/.exec(link)
         if (match && inodes.has(match[1])) {
-          return { pid: parseInt(pidStr, 10), name: processName(pidStr) }
+          const pid = parseInt(pidStr, 10)
+          return { pid, name: processName(pidStr), executable: executablePath(pid) }
         }
       }
     }
@@ -299,7 +443,7 @@ function findPeerProcess(localFd: number): ProcessInfo | null {
     if (fn(localFd, SOL_LOCAL, LOCAL_PEERPID, optval, optlen) !== 0) return null
     const pid = optval.readInt32LE(0)
     if (pid <= 0) return null
-    return { pid, name: macProcessName(pid) }
+    return { pid, name: macProcessName(pid), executable: executablePath(pid) }
   }
 
   const optval = Buffer.alloc(UCRED_SIZE)
@@ -311,7 +455,7 @@ function findPeerProcess(localFd: number): ProcessInfo | null {
   const pid = optval.readInt32LE(0)
   if (pid <= 0) return null
 
-  return { pid, name: processName(String(pid)) }
+  return { pid, name: processName(String(pid)), executable: executablePath(pid) }
 }
 
 function macProcessName(pid: number): string {

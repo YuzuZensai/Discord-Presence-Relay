@@ -18,6 +18,9 @@ const api = {
     ipcRenderer.invoke('relay:set-mirror-enabled', index, enabled),
   setAppBlacklisted: (appId: string, blacklisted: boolean): Promise<RelayStatus> =>
     ipcRenderer.invoke('relay:set-app-blacklisted', appId, blacklisted),
+  unlockPrimary: (): Promise<RelayStatus> => ipcRenderer.invoke('relay:unlock-primary'),
+  promoteToPrimary: (index: number): Promise<RelayStatus> =>
+    ipcRenderer.invoke('relay:promote-to-primary', index),
   onStatus: (callback: (status: RelayStatus) => void): (() => void) => {
     const listener = (_e: unknown, status: RelayStatus): void => callback(status)
     ipcRenderer.on('relay:status', listener)

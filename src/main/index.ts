@@ -15,6 +15,7 @@ interface Settings {
   disabledMirrors: number[]
   blacklistedApps: BlacklistedApp[]
   startMinimized: boolean
+  lockedPrimary: string | null
 }
 
 function parseBlacklistedApps(raw: unknown): BlacklistedApp[] {
@@ -33,10 +34,11 @@ function loadSettings(): Settings {
     return {
       disabledMirrors: Array.isArray(data?.disabledMirrors) ? data.disabledMirrors : [],
       blacklistedApps: parseBlacklistedApps(data?.blacklistedApps),
-      startMinimized: data?.startMinimized === true
+      startMinimized: data?.startMinimized === true,
+      lockedPrimary: typeof data?.lockedPrimary === 'string' ? data.lockedPrimary : null
     }
   } catch {
-    return { disabledMirrors: [], blacklistedApps: [], startMinimized: false }
+    return { disabledMirrors: [], blacklistedApps: [], startMinimized: false, lockedPrimary: null }
   }
 }
 
@@ -217,6 +219,7 @@ app.whenReady().then(() => {
   const settings = loadSettings()
   relay.setDisabledMirrors(settings.disabledMirrors)
   relay.setBlacklistedApps(settings.blacklistedApps)
+  relay.setLockedPrimary(settings.lockedPrimary)
 
   ipcMain.handle('relay:get-version', () => ({
     version: app.getVersion(),
@@ -263,6 +266,18 @@ app.whenReady().then(() => {
     const status = relay.setAppBlacklisted(appId, blacklisted)
     const current = loadSettings()
     saveSettings({ ...current, blacklistedApps: relay.getBlacklistedApps() })
+    return status
+  })
+  ipcMain.handle('relay:unlock-primary', () => {
+    const status = relay.unlockPrimary()
+    const current = loadSettings()
+    saveSettings({ ...current, lockedPrimary: relay.getLockedPrimary() })
+    return status
+  })
+  ipcMain.handle('relay:promote-to-primary', async (_e, index: number) => {
+    const status = await relay.promoteToPrimary(index)
+    const current = loadSettings()
+    saveSettings({ ...current, lockedPrimary: relay.getLockedPrimary() })
     return status
   })
 

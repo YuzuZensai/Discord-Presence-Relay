@@ -11,6 +11,11 @@ const MIRROR_RECONNECT_DELAY_MS = 2000
 const SERVER_CLOSE_TIMEOUT_MS = 2000
 const ASSET_FETCH_RETRY_MS = 60_000
 
+const PROCESS_EXIT_TIMEOUT_MS = 8000
+const PROCESS_EXIT_POLL_MS = 200
+const SLOT_BIND_TIMEOUT_MS = 20_000
+const SLOT_BIND_POLL_MS = 300
+
 interface AppAsset {
   id: string
   type: number
@@ -44,6 +49,10 @@ async function getAppAssetMap(appId: string): Promise<Map<string, string>> {
 
   appAssetCache.set(appId, { map, expires })
   return map
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function clearActivityPayload(pid: number): Buffer {
@@ -82,6 +91,7 @@ export interface RelayInstance {
   path: string
   isPrimary: boolean
   enabled: boolean
+  locked: boolean
   process: ProcessInfo | null
 }
 
@@ -132,6 +142,9 @@ export interface RelayStatus {
   instances: RelayInstance[]
   connectedClients: ConnectedClient[]
   blacklistedApps: BlacklistedApp[]
+  lockedPrimary: string | null
+  reordering: boolean
+  primaryOutOfOrder: boolean
   error: string | null
 }
 
@@ -166,15 +179,21 @@ export class RpcRelay extends EventEmitter {
   private fakeOwned = false
   private lastError: string | null = null
   private restarting = false
+  private lockedPrimary: string | null = null
+  private reordering = false
 
   getStatus(): RelayStatus {
-    const instances: RelayInstance[] = this.claimed.map(({ index, path: socketPath }, i) => ({
-      index,
-      path: socketPath,
-      isPrimary: i === 0,
-      enabled: i === 0 || !this.disabledMirrors.has(index),
-      process: platform.getInstanceProcess(index)
-    }))
+    const instances: RelayInstance[] = this.claimed.map(({ index, path: socketPath }, i) => {
+      const process = platform.getInstanceProcess(index)
+      return {
+        index,
+        path: socketPath,
+        isPrimary: i === 0,
+        enabled: i === 0 || !this.disabledMirrors.has(index),
+        locked: this.isLockedInstance(process),
+        process
+      }
+    })
 
     return {
       running: this.running,
@@ -189,8 +208,25 @@ export class RpcRelay extends EventEmitter {
         activity: s.activity
       })),
       blacklistedApps: this.getBlacklistedApps(),
+      lockedPrimary: this.lockedPrimary,
+      reordering: this.reordering,
+      primaryOutOfOrder: this.primaryOutOfOrder(instances),
       error: this.lastError
     }
+  }
+
+  private isLockedInstance(process: ProcessInfo | null): boolean {
+    return (
+      this.lockedPrimary !== null &&
+      process?.executable != null &&
+      process.executable === this.lockedPrimary
+    )
+  }
+
+  private primaryOutOfOrder(instances: RelayInstance[]): boolean {
+    if (this.lockedPrimary === null) return false
+    const locked = instances.find((inst) => inst.locked)
+    return locked !== undefined && !locked.isPrimary
   }
 
   setMirrorEnabled(index: number, enabled: boolean): RelayStatus {
@@ -212,6 +248,33 @@ export class RpcRelay extends EventEmitter {
 
   setDisabledMirrors(indices: number[]): void {
     this.disabledMirrors = new Set(indices)
+  }
+
+  getLockedPrimary(): string | null {
+    return this.lockedPrimary
+  }
+
+  setLockedPrimary(executable: string | null): void {
+    this.lockedPrimary = executable
+    this.emitStatus()
+  }
+
+  unlockPrimary(): RelayStatus {
+    this.lockedPrimary = null
+    this.emitStatus()
+    return this.getStatus()
+  }
+
+  async promoteToPrimary(index: number): Promise<RelayStatus> {
+    const process = platform.getInstanceProcess(index)
+    if (!process?.executable) {
+      this.lastError = 'Cannot resolve this Discord’s executable path'
+      this.emitStatus()
+      return this.getStatus()
+    }
+    this.lockedPrimary = process.executable
+    this.emitStatus()
+    return this.reorderForPrimary()
   }
 
   getBlacklistedApps(): BlacklistedApp[] {
@@ -586,6 +649,85 @@ export class RpcRelay extends EventEmitter {
     } finally {
       this.restarting = false
     }
+  }
+
+  private async reorderForPrimary(): Promise<RelayStatus> {
+    if (this.reordering) return this.getStatus()
+    if (this.lockedPrimary === null) return this.getStatus()
+
+    const lockedSlot = this.claimed.findIndex(
+      (c) => platform.getInstanceProcess(c.index)?.executable === this.lockedPrimary
+    )
+    if (lockedSlot < 0) {
+      this.lastError = 'Locked Discord is not currently running'
+      this.emitStatus()
+      return this.getStatus()
+    }
+    if (lockedSlot === 0) return this.getStatus()
+
+    this.reordering = true
+    this.lastError = null
+    this.emitStatus()
+
+    try {
+      // Grab what we need now before stop() wipes claimed below.
+      const others: string[] = []
+      const toKill: number[] = []
+      const freeIndices: number[] = []
+      for (let i = 0; i <= lockedSlot; i++) {
+        freeIndices.push(this.claimed[i].index)
+        const proc = platform.getInstanceProcess(this.claimed[i].index)
+        if (!proc) continue
+        toKill.push(proc.pid)
+        if (proc.executable && proc.executable !== this.lockedPrimary) {
+          others.push(proc.executable)
+        }
+      }
+      const lockedExecutable = this.lockedPrimary
+
+      await this.stop()
+
+      for (const pid of toKill) platform.killProcess(pid)
+      await this.waitForProcessesExit(toKill)
+
+      for (const index of freeIndices) {
+        await platform.removeStaleIpcSocket(index)
+      }
+
+      if (!platform.launchExecutable(lockedExecutable)) {
+        throw new Error('Failed to relaunch the locked Discord')
+      }
+      await this.waitForSlotBound(0)
+
+      for (const executable of others) platform.launchExecutable(executable)
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err)
+    } finally {
+      this.reordering = false
+      await this.start().catch((err) => {
+        this.lastError = err instanceof Error ? err.message : String(err)
+      })
+      this.emitStatus()
+    }
+
+    return this.getStatus()
+  }
+
+  private async waitForProcessesExit(pids: number[]): Promise<void> {
+    const deadline = Date.now() + PROCESS_EXIT_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      if (pids.every((pid) => !platform.isProcessAlive(pid))) return
+      await delay(PROCESS_EXIT_POLL_MS)
+    }
+  }
+
+  private async waitForSlotBound(index: number): Promise<void> {
+    const deadline = Date.now() + SLOT_BIND_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      if (await platform.isSocketAlive(platform.ipcSocketPath(index))) return
+      await delay(SLOT_BIND_POLL_MS)
+    }
+    throw new Error('Timed out waiting for the locked Discord to start')
   }
 
   private mirrorFrame(session: ClientSession, frame: Frame): void {
