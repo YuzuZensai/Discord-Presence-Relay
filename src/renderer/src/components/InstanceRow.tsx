@@ -1,4 +1,4 @@
-import { ArrowUpToLine, Info, Lock } from 'lucide-react'
+import { ArrowUpToLine, Lock, LockOpen } from 'lucide-react'
 import type { RelayInstance } from '../../../main/relay'
 import { Toggle } from './Toggle'
 import { Button } from './Button'
@@ -57,6 +57,23 @@ export function InstanceRow({
     </Button>
   )
 
+  const lockButton = (
+    <Button
+      variant="ghost"
+      className="p-1 shrink-0"
+      disabled={!canPromote || reordering}
+      onClick={() => onPromote(instance.index)}
+      aria-label="Lock as primary"
+      title={
+        !canPromote
+          ? 'Cannot resolve this Discord’s executable path'
+          : 'Lock this Discord as primary so it stays first even after restarts.'
+      }
+    >
+      <LockOpen className="w-4 h-4 text-zinc-400 hover:text-zinc-100 transition-colors" />
+    </Button>
+  )
+
   const info = (
     <div className="flex flex-col">
       <div className="flex items-center gap-2">
@@ -81,17 +98,7 @@ export function InstanceRow({
       <div className="flex items-center justify-between gap-2">
         {info}
         <div className="flex items-center gap-1 shrink-0">
-          {instance.locked ? (
-            unlockButton
-          ) : (
-            <Info className="w-4 h-4 text-zinc-400 hover:text-zinc-100 cursor-help transition-colors">
-              <title>
-                The primary instance gets full passthrough and can&apos;t be turned off. It&apos;s
-                the Discord that started first (discord-ipc-0). Use Promote on another instance to
-                make it primary instead.
-              </title>
-            </Info>
-          )}
+          {instance.locked ? unlockButton : lockButton}
         </div>
       </div>
     )
@@ -101,7 +108,6 @@ export function InstanceRow({
     <div className="flex items-center justify-between gap-2">
       {info}
       <div className="flex items-center gap-1 shrink-0">
-        {instance.locked && unlockButton}
         {promoteButton}
         <Toggle
           checked={instance.enabled}

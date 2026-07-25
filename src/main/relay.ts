@@ -525,6 +525,17 @@ export class RpcRelay extends EventEmitter {
       }
 
       if (changed) this.emitStatus()
+
+      if (this.lockedPrimary !== null) {
+        const lockedSlot = this.claimed.findIndex(
+          (c) => platform.getInstanceProcess(c.index)?.executable === this.lockedPrimary
+        )
+        if (lockedSlot > 0) {
+          this.discovering = false
+          await this.reorderForPrimary()
+          return
+        }
+      }
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err)
       this.emitStatus()
