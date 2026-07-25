@@ -8,7 +8,7 @@ cask "discord-presence-relay" do
   homepage "https://github.com/YuzuZensai/Discord-RPC-Relay"
 
   auto_updates false
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
 
   app "Discord Presence Relay.app"
 
@@ -27,7 +27,7 @@ cask "discord-presence-relay" do
   caveats do
     <<~EOS
       #{token} is not notarized. The quarantine attribute is cleared
-      automatically on install; if macOS still refuses to open it
+      automatically on install, if macOS still refuses to open it
       ("app is damaged and can't be opened"), run:
         xattr -cr "#{appdir}/Discord Presence Relay.app"
     EOS

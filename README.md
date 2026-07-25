@@ -52,8 +52,12 @@ settings once it's running.
 
 ```bash
 brew tap yuzuzensai/discord-rpc-relay https://github.com/YuzuZensai/Discord-RPC-Relay
+brew trust yuzuzensai/discord-rpc-relay
 brew install --cask discord-presence-relay
 ```
+
+`brew trust` is required once per tap, Homebrew blocks installing from
+third-party taps until you explicitly trust them.
 
 The cask clears the Gatekeeper quarantine attribute automatically after
 install, so the app opens normally right away.
