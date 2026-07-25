@@ -15,8 +15,8 @@ process.env.BUILD_VERSION = getBuildVersion()
  * @type {import('electron-builder').Configuration}
  */
 export default {
-  appId: 'cafe.kirameki.discord-rpc-relay',
-  productName: 'Discord RPC Relay',
+  appId: 'cafe.kirameki.discord-presence-relay',
+  productName: 'Discord Presence Relay',
   files: [
     '!**/.vscode/*',
     '!src/*',
@@ -28,7 +28,7 @@ export default {
   ],
   asarUnpack: ['resources/**'],
   win: {
-    executableName: 'discord-rpc-relay'
+    executableName: 'discord-presence-relay'
   },
   nsis: {
     artifactName: '${name}-${env.BUILD_VERSION}-setup.${ext}',

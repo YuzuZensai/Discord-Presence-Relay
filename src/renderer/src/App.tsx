@@ -288,7 +288,7 @@ export function App(): React.JSX.Element {
   if (status.unsupported) {
     return (
       <div className="flex flex-col h-screen items-center justify-center p-5 gap-3 text-center">
-        <h1 className="text-lg font-semibold">Discord RPC Relay</h1>
+        <h1 className="text-lg font-semibold">Discord Presence Relay</h1>
         <p className="text-sm text-zinc-400">Windows is not supported.</p>
       </div>
     )
@@ -375,7 +375,7 @@ export function App(): React.JSX.Element {
   return (
     <div className="flex flex-col h-screen p-5 gap-4">
       <header className="flex items-center justify-between gap-3">
-        <h1 className="text-lg font-semibold">Discord RPC Relay</h1>
+        <h1 className="text-lg font-semibold">Discord Presence Relay</h1>
         <Button
           variant="ghost"
           onClick={() => setView('settings')}

@@ -53,7 +53,7 @@ const LINUX_AUTOSTART_DESKTOP_FILE = join(
   app.getPath('home'),
   '.config',
   'autostart',
-  'cafe.kirameki.discord-rpc-relay.desktop'
+  'cafe.kirameki.discord-presence-relay.desktop'
 )
 
 function getLinuxAutostart(): boolean {
@@ -71,7 +71,7 @@ function setLinuxAutostart(enabled: boolean, startMinimized: boolean): boolean {
   const desktopEntry = [
     '[Desktop Entry]',
     'Type=Application',
-    'Name=Discord RPC Relay',
+    'Name=Discord Presence Relay',
     `Exec=${exec}`,
     'Terminal=false',
     'X-GNOME-Autostart-enabled=true'
@@ -152,7 +152,7 @@ function createWindow(): void {
 function createTray(): void {
   const trayIcon = nativeImage.createFromPath(icon).resize({ width: 24, height: 24 })
   tray = new Tray(trayIcon)
-  tray.setToolTip('Discord RPC Relay')
+  tray.setToolTip('Discord Presence Relay')
 
   updateTrayMenu(relay.getStatus())
 
@@ -210,7 +210,7 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('cafe.kirameki.discord-rpc-relay')
+  electronApp.setAppUserModelId('cafe.kirameki.discord-presence-relay')
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

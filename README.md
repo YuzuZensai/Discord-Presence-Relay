@@ -1,6 +1,6 @@
-# 🪩 Discord-RPC-Relay
+# 🪩 Discord-Presence-Relay
 
-Mirrors Discord Rich Presence (RPC) activity to every running Discord
+Mirrors Discord Rich Presence activity to every running Discord
 instance (stable, PTB, Canary, ...), so apps that only connect to the
 primary `discord-ipc-0` socket show their presence everywhere.
 
@@ -15,16 +15,16 @@ Linux and macOS only.
 ## Install
 
 Download the latest build for your platform from the
-[Releases page](https://github.com/YuzuZensai/Discord-RPC-Relay/releases).
+[Releases page](https://github.com/YuzuZensai/Discord-Presence-Relay/releases).
 
 ### Linux (AppImage)
 
-1. Download `discord-rpc-relay-<version>.AppImage`.
+1. Download `discord-presence-relay-<version>.AppImage`.
 2. Make it executable and run it:
 
    ```bash
-   chmod +x discord-rpc-relay-*.AppImage
-   ./discord-rpc-relay-*.AppImage
+   chmod +x discord-presence-relay-*.AppImage
+   ./discord-presence-relay-*.AppImage
    ```
 
 The app runs from the tray. To launch it automatically and have it appear in
@@ -34,24 +34,24 @@ settings once it's running.
 
 ### Linux (.deb)
 
-1. Download `discord-rpc-relay-<version>.deb`.
+1. Download `discord-presence-relay-<version>.deb`.
 2. Install it:
 
    ```bash
-   sudo apt install ./discord-rpc-relay-*.deb
+   sudo apt install ./discord-presence-relay-*.deb
    ```
 
-3. Launch it from your application menu ("Discord RPC Relay"), or from a
+3. Launch it from your application menu ("Discord Presence Relay"), or from a
    terminal:
 
    ```bash
-   discord-rpc-relay
+   discord-presence-relay
    ```
 
 ### macOS
 
-1. Download `discord-rpc-relay-<version>.dmg` and open it.
-2. Drag **Discord RPC Relay** into the **Applications** folder.
+1. Download `discord-presence-relay-<version>.dmg` and open it.
+2. Drag **Discord Presence Relay** into the **Applications** folder.
 3. Clear the Gatekeeper quarantine attribute before first launch (see below),
    then open the app from Applications/Launchpad/Spotlight as usual.
 
@@ -66,7 +66,7 @@ developer"). After installing, clear the quarantine attribute from the
 Terminal:
 
 ```bash
-xattr -cr /Applications/Discord\ RPC\ Relay.app
+xattr -cr /Applications/Discord\ Presence\ Relay.app
 ```
 
 Then open the app normally.
