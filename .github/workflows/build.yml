@@ -123,3 +123,39 @@ jobs:
             dist/*.AppImage
             dist/*.deb
           generate_release_notes: true
+
+  update-cask:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Compute DMG sha256
+        id: sha
+        run: |
+          version="${GITHUB_REF_NAME}"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${version}/discord-presence-relay-${version}.dmg"
+          curl -sL -o dpr.dmg "$url"
+          echo "value=$(shasum -a 256 dpr.dmg | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Update cask
+        run: |
+          version="${GITHUB_REF_NAME}"
+          sed -i "s/version \".*\"/version \"${version}\"/" Casks/discord-presence-relay.rb
+          sed -i "s/sha256 \".*\"/sha256 \"${{ steps.sha.outputs.value }}\"/" Casks/discord-presence-relay.rb
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/discord-presence-relay.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "Update discord-presence-relay to ${GITHUB_REF_NAME}"
+          git push origin HEAD:main

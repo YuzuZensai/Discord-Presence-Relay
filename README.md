@@ -48,7 +48,17 @@ settings once it's running.
    discord-presence-relay
    ```
 
-### macOS
+### macOS (Homebrew)
+
+```bash
+brew tap yuzuzensai/discord-rpc-relay https://github.com/YuzuZensai/Discord-RPC-Relay
+brew install --cask discord-presence-relay
+```
+
+The cask clears the Gatekeeper quarantine attribute automatically after
+install, so the app opens normally right away.
+
+### macOS (manual)
 
 1. Download `discord-presence-relay-<version>.dmg` and open it.
 2. Drag **Discord Presence Relay** into the **Applications** folder.

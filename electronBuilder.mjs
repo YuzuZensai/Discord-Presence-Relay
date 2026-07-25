@@ -20,6 +20,7 @@ export default {
   files: [
     '!**/.vscode/*',
     '!src/*',
+    '!Casks/*',
     '!electron.vite.config.{js,ts,mjs,cjs}',
     '!electronBuilder.mjs',
     '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}',
